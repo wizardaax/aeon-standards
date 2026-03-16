@@ -117,8 +117,8 @@ The process is:
 
 ## First Release (`v1.0.0`)
 
-The repository is ready for tagging as `v1.0.0` / `v1` once the following
-conditions are met:
+The repository was tagged as `v1.0.0` / `v1` once the following
+conditions were met:
 
 - [x] `.github/workflows/python-ci.yml` exists and is callable
 - [x] `.github/workflows/security.yml` exists and is callable
@@ -126,3 +126,17 @@ conditions are met:
 - [x] This `docs/VERSIONING.md` document exists
 - [x] PR is merged into `main`
 - [x] Maintainer pushes `v1.0.0` and `v1` tags via Release v1 workflow
+
+## Patch Release (`v1.0.1`)
+
+Hardened control-plane release. This tag was cut after PR #3 to ensure
+downstream repositories consume the supply-chain-hardened workflows.
+
+Changes included:
+- Governed/manual release flow enforced — `v1` no longer auto-moves on push
+- Action SHAs pinned across all workflow files
+- `ci-self-test.yml` self-validation CI added
+- CHANGELOG and VERSIONING policy synced
+
+Tagged via `release-v1.yml` `workflow_dispatch` with annotation:
+`"Hardened control-plane release"`
