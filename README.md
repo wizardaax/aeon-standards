@@ -137,12 +137,13 @@ See [docs/VERSIONING.md](./docs/VERSIONING.md) for the full versioning policy.
 aeon-standards/
 ├── .github/
 │   └── workflows/
-│       ├── python-ci.yml     # Reusable Python CI workflow
-│       ├── security.yml      # Reusable Security workflow
-│       ├── release-v1.yml    # Governed release tagging (workflow_dispatch)
-│       └── ci-self-test.yml  # Self-test: YAML lint on push/PR
+│       ├── python-ci.yml          # Reusable Python CI workflow
+│       ├── security.yml           # Reusable Security workflow
+│       ├── release-v1.yml         # Governed release tagging (workflow_dispatch)
+│       ├── ci-self-test.yml       # Self-test: YAML lint on push/PR
+│       └── rerun-downstream.yml   # Verify tags and rerun failed downstream jobs
 ├── docs/
-│   └── VERSIONING.md         # Versioning and release policy
+│   └── VERSIONING.md              # Versioning and release policy
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md
