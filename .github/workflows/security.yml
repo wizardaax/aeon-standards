@@ -1,0 +1,92 @@
+# ============================================================
+# Reusable Security workflow — aeon-standards v1
+#
+# Consumer usage:
+#   jobs:
+#     security:
+#       uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
+#       # For dependency-review the caller needs pull_request or
+#       # pull_request_target trigger; pass secrets: inherit if needed.
+#
+# The job name `security` is stable and suitable for branch-
+# protection required-status-check rules.
+#
+# Safe defaults: steps that require ecosystem files are skipped
+# gracefully when those files are absent.
+# ============================================================
+name: Security
+
+on:
+  workflow_call:
+
+jobs:
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read          # required for checkout + gitleaks
+      pull-requests: read     # required for dependency-review
+
+    steps:
+      # Full history is needed for gitleaks secret scanning.
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Dependency Review (PR-only) ───────────────────────
+      # Compares the manifest changes in a pull request against
+      # the GitHub Advisory Database. Skipped on push events.
+      - name: Dependency Review
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+      # ── pip-audit (Python) ────────────────────────────────
+      # Audits Python dependencies when a requirements file or
+      # pyproject.toml is present.
+      - name: Set up Python for pip-audit
+        if: >
+          hashFiles('requirements.txt') != '' ||
+          hashFiles('requirements*.txt') != '' ||
+          hashFiles('pyproject.toml') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Audit Python dependencies (pip-audit)
+        if: >
+          hashFiles('requirements.txt') != '' ||
+          hashFiles('requirements*.txt') != '' ||
+          hashFiles('pyproject.toml') != ''
+        run: |
+          pip install pip-audit
+          # Collect requirement files; fall back to pyproject.toml extras
+          REQ_FILES=$(ls requirements*.txt 2>/dev/null | tr '\n' ' ')
+          if [ -n "$REQ_FILES" ]; then
+            pip-audit -r $REQ_FILES
+          elif [ -f pyproject.toml ]; then
+            pip-audit --desc
+          fi
+
+      # ── npm audit (Node) ──────────────────────────────────
+      # Audits Node.js dependencies when a package-lock.json is
+      # present (npm ci is required for audit to work on the
+      # frozen lockfile).
+      - name: Audit npm dependencies (npm audit)
+        if: hashFiles('package-lock.json') != ''
+        run: |
+          npm ci --ignore-scripts --prefer-offline
+          npm audit --audit-level=high
+
+      # ── Secret scanning (gitleaks) ────────────────────────
+      # Scans the full commit history for accidentally committed
+      # secrets. Runs as a fallback when GitHub Advanced Security
+      # secret scanning is not available (e.g. public forks,
+      # personal accounts).
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

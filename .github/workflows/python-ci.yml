@@ -1,0 +1,82 @@
+# ============================================================
+# Reusable Python CI workflow — aeon-standards v1
+#
+# Consumer usage:
+#   jobs:
+#     python-ci:
+#       uses: wizardaax/aeon-standards/.github/workflows/python-ci.yml@v1
+#       # optionally pass secrets: inherit
+#
+# The job name `python-ci` is stable and suitable for branch-
+# protection required-status-check rules.
+# ============================================================
+name: Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version to use (default: 3.11)"
+        type: string
+        default: "3.11"
+      working-directory:
+        description: "Working directory to run checks in (default: repo root)"
+        type: string
+        default: "."
+
+jobs:
+  python-ci:
+    name: Python CI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+
+      # Install linting / formatting tooling.
+      # project-level dev-dependencies (pyproject.toml / requirements*.txt)
+      # are intentionally NOT assumed here to keep this workflow generic.
+      - name: Install CI tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black
+
+      # ── Linting ──────────────────────────────────────────
+      - name: Lint with ruff
+        run: ruff check .
+
+      # ── Formatting ───────────────────────────────────────
+      - name: Check formatting with black
+        run: black --check .
+
+      # ── Type checking (non-fatal when config is absent) ──
+      - name: Type check with mypy (optional)
+        run: |
+          if [ -f mypy.ini ] || [ -f setup.cfg ] || grep -q '\[tool.mypy\]' pyproject.toml 2>/dev/null; then
+            pip install mypy
+            mypy . || true
+          else
+            echo "No mypy configuration found — skipping type check."
+          fi
+
+      # ── Tests (only when a test suite exists) ────────────
+      - name: Run tests with pytest
+        run: |
+          if find . -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+            pip install pytest
+            # Install project deps if any requirements file exists
+            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+            pytest -q
+          else
+            echo "No test files found — skipping pytest."
+          fi
