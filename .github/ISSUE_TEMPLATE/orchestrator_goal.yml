@@ -1,0 +1,80 @@
+name: "Orchestrator Goal"
+description: "Manually trigger a new orchestrator run without using the CLI."
+title: "🤖 Orchestrator Goal: [one-line goal]"
+labels:
+  - "orchestrator:run"
+  - "state:queued"
+  - "priority:p2"
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## New Orchestrator Run
+
+        Fill in the fields below to queue an orchestration run.
+        The `orchestrator-dispatch` workflow will be triggered automatically
+        when an operator runs:
+
+        ```bash
+        gh workflow run orchestrator-dispatch.yml \
+          -R wizardaax/aeon-standards \
+          -f goal="<your goal>" \
+          -f repo_scope='["org/repo1","org/repo2"]' \
+          -f mode="safe"
+        ```
+
+        This issue template is for **manual bookkeeping** of goals that are
+        then dispatched via the workflow above.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: "Goal"
+      description: "Describe the orchestration goal in one or two sentences."
+      placeholder: "Propagate python-ci@v1.0.4 and rerun failed checks across the fleet."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repo_scope
+    attributes:
+      label: "Repository scope (JSON array)"
+      description: "JSON array of target repositories. Leave blank to use the default fleet."
+      placeholder: '["wizardaax/recursive-field-math-pro","wizardaax/SCE-88","wizardaax/wizardaax.github.io"]'
+    validations:
+      required: false
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: "Execution mode"
+      description: |
+        **safe** — human gate required before any PR is merged.
+        **aggressive** — federation agent may auto-merge patch PRs.
+      options:
+        - "safe"
+        - "aggressive"
+      default: 0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "Priority"
+      options:
+        - "p1 — critical / SLA breach"
+        - "p2 — normal (default)"
+        - "p3 — background / low urgency"
+      default: 1
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: "Additional notes"
+      description: "Any context, constraints, or out-of-scope items the orchestrator should know."
+    validations:
+      required: false

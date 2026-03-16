@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wizardaax/aeon-standards/schemas/result.json",
+  "title": "Orchestrator Task Result",
+  "description": "Structured result emitted by an agent and written into the envelope result field.",
+  "type": "object",
+  "required": ["ok", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "true if the task succeeded; false if it failed or produced findings that block progress."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable one- or two-sentence summary of what the agent did and what it found.",
+      "examples": ["All 3 repos pinned to python-ci@v1.0.4; no drift detected."]
+    },
+    "details": {
+      "type": "object",
+      "description": "Agent-specific structured detail payload (arbitrary key-value pairs)."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["report", "runbook", "pr", "log"]
+          }
+        }
+      },
+      "default": [],
+      "description": "Artifacts produced by this task (PRs opened, reports uploaded, etc.)."
+    },
+    "remediations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Ordered list of required remediation steps when ok=false."
+    },
+    "escalate": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true the reducer must open a human-gate before the run can continue."
+    },
+    "pass_rate_delta": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "For CI agent: fractional change in passing checks (e.g. 0.25 = 25pp improvement)."
+    },
+    "prs_opened": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      },
+      "description": "URLs of pull requests opened by this task."
+    }
+  }
+}

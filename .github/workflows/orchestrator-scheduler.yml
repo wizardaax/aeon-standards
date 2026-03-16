@@ -1,0 +1,320 @@
+# ============================================================
+# Orchestrator Scheduler — aeon-standards
+#
+# Cron-based watchdog that:
+#   1. Finds stale "state:running" orchestrator run issues
+#      (tasks running longer than task_sla_minutes from
+#      orchestrator-policy.yml).
+#   2. Retries stale tasks up to max_attempts or marks them
+#      blocked with a warning comment.
+#   3. Optionally posts a daily health-KPI digest.
+#
+# Runs every 10 minutes.  May also be triggered manually for
+# immediate inspection.
+#
+# Required secret:
+#   GH_ORCHESTRATOR_TOKEN — PAT/App token with issues:write
+#   and repository dispatch permissions.
+# ============================================================
+name: Orchestrator Scheduler
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # Every 10 minutes
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "When true, report stale tasks but do not retry or close them"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  schedule:
+    name: Check for stale tasks and SLA breaches
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # ------------------------------------------------------------------
+      # Load policy
+      # ------------------------------------------------------------------
+      - name: Load orchestrator policy
+        id: policy
+        run: |
+          TASK_SLA=$(python3 -c "
+          import yaml, sys
+          with open('orchestrator-policy.yml') as f:
+              p = yaml.safe_load(f)
+          print(p.get('task_sla_minutes', 30))
+          ")
+          MAX_ATTEMPTS=$(python3 -c "
+          import yaml
+          with open('orchestrator-policy.yml') as f:
+              p = yaml.safe_load(f)
+          print(p.get('max_attempts', 3))
+          ")
+          DIGEST_ENABLED=$(python3 -c "
+          import yaml
+          with open('orchestrator-policy.yml') as f:
+              p = yaml.safe_load(f)
+          print(str(p.get('daily_digest_enabled', True)).lower())
+          ")
+          echo "task_sla_minutes=${TASK_SLA}"       >> "$GITHUB_OUTPUT"
+          echo "max_attempts=${MAX_ATTEMPTS}"        >> "$GITHUB_OUTPUT"
+          echo "daily_digest_enabled=${DIGEST_ENABLED}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Find active orchestrator run issues
+      # ------------------------------------------------------------------
+      - name: Find active run issues
+        id: find_runs
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          # List open issues with both orchestrator:run and state:running labels
+          gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "orchestrator:run" \
+            --label "state:running" \
+            --state open \
+            --json number,title,createdAt,updatedAt \
+            --limit 50 > /tmp/active_runs.json
+
+          COUNT=$(jq 'length' /tmp/active_runs.json)
+          echo "active_run_count=${COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Found ${COUNT} active run issue(s)"
+          cat /tmp/active_runs.json | jq -r '.[] | "#\(.number) \(.title)"'
+
+      # ------------------------------------------------------------------
+      # Check each active run for stale tasks
+      # ------------------------------------------------------------------
+      - name: Check stale tasks
+        if: steps.find_runs.outputs.active_run_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          TASK_SLA_MINUTES: ${{ steps.policy.outputs.task_sla_minutes }}
+          MAX_ATTEMPTS: ${{ steps.policy.outputs.max_attempts }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess, sys
+          from datetime import datetime, timezone, timedelta
+
+          GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+          GH_TOKEN          = os.environ.get("GH_TOKEN", "")
+          DRY_RUN           = os.environ.get("DRY_RUN", "false").lower() == "true"
+          SLA_MINUTES       = int(os.environ.get("TASK_SLA_MINUTES", "30"))
+          MAX_ATTEMPTS      = int(os.environ.get("MAX_ATTEMPTS", "3"))
+
+          def gh(*args, input_data=None):
+              result = subprocess.run(
+                  ["gh"] + list(args),
+                  input=input_data, text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              if result.returncode != 0:
+                  print(f"::warning::gh command failed: {result.stderr.strip()}")
+              return result.stdout.strip()
+
+          with open("/tmp/active_runs.json") as f:
+              active_runs = json.load(f)
+
+          now = datetime.now(timezone.utc)
+          stale_threshold = timedelta(minutes=SLA_MINUTES)
+
+          for run in active_runs:
+              issue_number = run["number"]
+              print(f"\n--- Checking issue #{issue_number}: {run['title']} ---")
+
+              # Fetch all comments
+              comments_raw = gh(
+                  "api",
+                  f"/repos/{GITHUB_REPOSITORY}/issues/{issue_number}/comments",
+                  "--paginate", "--jq", ".[].body"
+              )
+
+              envelope_pattern = re.compile(
+                  r'<!--\s*orchestrator:envelope[^>]*-->\s*```json\s*(\{.*?\})\s*```',
+                  re.DOTALL
+              )
+
+              envelopes = {}
+              for m in envelope_pattern.finditer(comments_raw):
+                  try:
+                      env = json.loads(m.group(1))
+                      task_id = env.get("task_id")
+                      if not task_id:
+                          continue
+                      if (task_id not in envelopes or
+                              env.get("attempt", 1) >= envelopes[task_id].get("attempt", 1)):
+                          envelopes[task_id] = env
+                  except json.JSONDecodeError:
+                      pass
+
+              stale_found = False
+              for task_id, env in envelopes.items():
+                  state   = env.get("state", "unknown")
+                  attempt = env.get("attempt", 1)
+                  ts_str  = env.get("timestamp", "")
+                  agent   = env.get("agent", "unknown")
+                  run_id  = env.get("run_id", "")
+
+                  if state not in ("queued", "running"):
+                      continue
+
+                  try:
+                      ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                  except (ValueError, AttributeError):
+                      continue
+
+                  age = now - ts
+                  if age < stale_threshold:
+                      continue
+
+                  stale_found = True
+                  print(f"  ⚠️  Stale task {task_id} ({agent}) — state={state}, "
+                        f"age={int(age.total_seconds() // 60)}m, attempt={attempt}")
+
+                  if DRY_RUN:
+                      print(f"  [dry-run] Would retry or block task {task_id}")
+                      continue
+
+                  if attempt >= MAX_ATTEMPTS:
+                      # Mark blocked and post warning
+                      msg = (f"⚠️ **SLA breach**: task `{task_id}` ({agent}) has been "
+                             f"`{state}` for {int(age.total_seconds() // 60)} minutes and "
+                             f"has exhausted {attempt}/{MAX_ATTEMPTS} attempts. "
+                             f"Marking as **blocked** — manual intervention required.\n\n"
+                             f"Run: `{run_id}`")
+                      gh("issue", "comment", str(issue_number),
+                         "--repo", GITHUB_REPOSITORY, "--body", msg)
+                      print(f"  ❌ Task {task_id} blocked (max attempts reached)")
+                  else:
+                      # Re-dispatch the task
+                      new_attempt = attempt + 1
+                      if not GH_TOKEN:
+                          print("  ::warning::GH_ORCHESTRATOR_TOKEN not set — cannot re-dispatch")
+                          continue
+
+                      payload = json.dumps({
+                          "event_type": f"agent.task.{agent}",
+                          "client_payload": {
+                              "run_id":       run_id,
+                              "task_id":      task_id,
+                              "issue_number": issue_number,
+                              "attempt":      new_attempt,
+                              "goal":         env.get("goal", ""),
+                              "repo_scope":   env.get("repo_scope", []),
+                              "mode":         env.get("mode", "safe"),
+                          }
+                      })
+                      result = subprocess.run(
+                          ["gh", "api", f"/repos/{GITHUB_REPOSITORY}/dispatches",
+                           "--method", "POST",
+                           "-H", "Accept: application/vnd.github+json",
+                           "--input", "-"],
+                          input=payload, text=True, capture_output=True,
+                          env={**os.environ, "GH_TOKEN": GH_TOKEN}
+                      )
+                      if result.returncode == 0:
+                          retry_msg = (f"🔄 **Retry {new_attempt}/{MAX_ATTEMPTS}**: "
+                                       f"Re-dispatching stale task `{task_id}` ({agent}). "
+                                       f"Previous attempt age: {int(age.total_seconds() // 60)}m.")
+                          gh("issue", "comment", str(issue_number),
+                             "--repo", GITHUB_REPOSITORY, "--body", retry_msg)
+                          print(f"  ↺ Retried task {task_id} (attempt {new_attempt})")
+                      else:
+                          print(f"  ::error::Failed to retry task {task_id}: {result.stderr}")
+
+              if not stale_found:
+                  print("  ✅ No stale tasks found")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Daily digest (posted once per day at ~00:00 UTC via cron)
+      # ------------------------------------------------------------------
+      - name: Post daily digest
+        if: >
+          steps.policy.outputs.daily_digest_enabled == 'true' &&
+          github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          # Only run the digest near midnight UTC (0:00–0:09 window)
+          HOUR=$(date -u +'%H')
+          MINUTE=$(date -u +'%M')
+          if [ "${HOUR}" != "00" ] || [ "${MINUTE#0}" -gt 9 ] 2>/dev/null; then
+            echo "Not in daily digest window (${HOUR}:${MINUTE} UTC) — skipping."
+            exit 0
+          fi
+
+          python3 - <<'PYEOF'
+          import json, os, subprocess
+          from datetime import datetime, timezone, timedelta
+
+          GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+          GH_TOKEN          = os.environ.get("GH_TOKEN", "")
+
+          def gh_json(*args):
+              result = subprocess.run(
+                  ["gh"] + list(args),
+                  text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              return result.stdout.strip()
+
+          now      = datetime.now(timezone.utc)
+          since    = (now - timedelta(hours=24)).isoformat()
+
+          runs_raw = gh_json(
+              "issue", "list",
+              "--repo", GITHUB_REPOSITORY,
+              "--label", "orchestrator:run",
+              "--state", "all",
+              "--json", "number,title,state,labels,createdAt",
+              "--limit", "100"
+          )
+
+          try:
+              runs = json.loads(runs_raw) if runs_raw else []
+          except json.JSONDecodeError:
+              runs = []
+
+          recent = [r for r in runs if r.get("createdAt", "") >= since]
+
+          done_count   = sum(1 for r in recent if any(l["name"] == "state:done"   for l in r.get("labels", [])))
+          failed_count = sum(1 for r in recent if any(l["name"] == "state:failed" for l in r.get("labels", [])))
+          active_count = sum(1 for r in recent if r.get("state") == "OPEN")
+
+          digest = (
+              f"## 📊 Daily Orchestrator Digest — {now.strftime('%Y-%m-%d')}\n\n"
+              f"| Metric | Count |\n"
+              f"|--------|-------|\n"
+              f"| Runs in last 24 h | {len(recent)} |\n"
+              f"| Completed ✅ | {done_count} |\n"
+              f"| Failed ❌ | {failed_count} |\n"
+              f"| Active 🔄 | {active_count} |\n\n"
+              f"_Generated at {now.strftime('%Y-%m-%dT%H:%M:%SZ')}_"
+          )
+
+          with open("/tmp/digest.md", "w") as f:
+              f.write(digest)
+
+          # Open a fresh issue for the digest
+          subprocess.run(
+              ["gh", "issue", "create",
+               "--repo", GITHUB_REPOSITORY,
+               "--title", f"📊 Orchestrator Daily Digest — {now.strftime('%Y-%m-%d')}",
+               "--body-file", "/tmp/digest.md",
+               "--label", "orchestrator:run"],
+              env={**os.environ, "GH_TOKEN": GH_TOKEN}
+          )
+          print(f"Daily digest posted: {len(recent)} runs, {done_count} done, "
+                f"{failed_count} failed, {active_count} active")
+          PYEOF

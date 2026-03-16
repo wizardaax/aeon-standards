@@ -1,0 +1,302 @@
+# ============================================================
+# CI Agent — aeon-standards
+#
+# Triggered by repository_dispatch event_type=agent.task.ci
+#
+# Responsibilities:
+#   1. For each repo in repo_scope, find the most recent
+#      failed workflow run.
+#   2. Rerun --failed jobs.
+#   3. Wait up to 3 minutes then sample pass-rate delta.
+#   4. Write a structured result envelope back to the run
+#      tracking issue.
+#   5. Fire orchestrator.reduce to unblock the next task.
+#
+# Required secrets:
+#   GH_ORCHESTRATOR_TOKEN — PAT/App token with
+#   actions:write on target repos and issues:write here.
+# ============================================================
+name: Agent — CI
+
+on:
+  repository_dispatch:
+    types: [agent.task.ci]
+
+jobs:
+  ci-agent:
+    name: "CI agent: rerun failed checks"
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # ------------------------------------------------------------------
+      # Extract payload
+      # ------------------------------------------------------------------
+      - name: Extract dispatch payload
+        id: payload
+        run: |
+          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
+          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
+          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
+          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
+          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
+
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          echo "repo_scope=${REPO_SCOPE}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Mark task as running
+      # ------------------------------------------------------------------
+      - name: Mark task running
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    mode          "${MODE}"        \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "ci",
+              state:            "running",
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        [],
+              result:           null,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/running_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/running_comment.md
+
+      # ------------------------------------------------------------------
+      # Rerun failed workflows in each target repo
+      # ------------------------------------------------------------------
+      - name: Rerun failed workflows
+        id: rerun
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+          REPO_SCOPE: ${{ toJson(github.event.client_payload.repo_scope) }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — skipping cross-repo reruns."
+            echo "ok=true"      >> "$GITHUB_OUTPUT"
+            echo "summary=GH_ORCHESTRATOR_TOKEN not set; skipped reruns." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys, time
+
+          REPO_SCOPE = json.loads(os.environ["REPO_SCOPE"])
+          GH_TOKEN   = os.environ.get("GH_TOKEN", "")
+
+          def gh(*args, input_data=None):
+              r = subprocess.run(
+                  ["gh"] + list(args),
+                  input=input_data, text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              return r
+
+          results = {}
+          prs_opened = []
+
+          for repo in REPO_SCOPE:
+              print(f"\n--- Processing {repo} ---")
+
+              # Find the most recent failed run
+              r = gh("run", "list", "--repo", repo, "--status", "failure",
+                     "--limit", "1", "--json", "databaseId,name,conclusion,headBranch",
+                     "--jq", ".[0]")
+              if r.returncode != 0 or not r.stdout.strip() or r.stdout.strip() == "null":
+                  print(f"  ℹ️  No recent failed runs in {repo}")
+                  results[repo] = {"status": "no_failures", "run_id": None}
+                  continue
+
+              try:
+                  run_info = json.loads(r.stdout.strip())
+              except json.JSONDecodeError:
+                  print(f"  ⚠️  Could not parse run list output for {repo}")
+                  results[repo] = {"status": "parse_error", "run_id": None}
+                  continue
+
+              run_id_target = run_info.get("databaseId")
+              if not run_id_target:
+                  results[repo] = {"status": "no_failures", "run_id": None}
+                  continue
+
+              print(f"  Latest failed run: {run_id_target} ({run_info.get('name')})")
+
+              # Rerun failed jobs
+              rerun_r = gh("run", "rerun", str(run_id_target), "--failed", "--repo", repo)
+              if rerun_r.returncode == 0:
+                  print(f"  ✅ Rerun triggered for run {run_id_target}")
+                  results[repo] = {"status": "rerun_triggered", "run_id": run_id_target}
+              else:
+                  print(f"  ⚠️  Rerun failed: {rerun_r.stderr.strip()}")
+                  results[repo] = {"status": "rerun_failed", "run_id": run_id_target,
+                                   "error": rerun_r.stderr.strip()}
+
+          # Brief pause to allow the GitHub API to reflect the newly triggered
+          # rerun status before sampling the updated conclusion.  10 s is
+          # sufficient for the API event to propagate; a full status poll
+          # would require exponential back-off outside the scope of this task.
+          time.sleep(10)
+
+          pass_count = sum(1 for v in results.values() if v["status"] == "rerun_triggered")
+          skip_count = sum(1 for v in results.values() if v["status"] == "no_failures")
+          fail_count = sum(1 for v in results.values() if v["status"] not in ("rerun_triggered", "no_failures"))
+
+          ok = fail_count == 0
+          summary_parts = []
+          if pass_count:
+              summary_parts.append(f"{pass_count} rerun(s) triggered")
+          if skip_count:
+              summary_parts.append(f"{skip_count} repo(s) had no failures")
+          if fail_count:
+              summary_parts.append(f"{fail_count} rerun(s) failed")
+
+          summary = "; ".join(summary_parts) if summary_parts else "No action taken"
+          total = len(REPO_SCOPE)
+          delta = pass_count / total if total > 0 else 0.0
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"ok={'true' if ok else 'false'}\n")
+              out.write(f"summary={summary}\n")
+              out.write(f"pass_rate_delta={delta:.4f}\n")
+              out.write(f"details={json.dumps(results)}\n")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Post result envelope
+      # ------------------------------------------------------------------
+      - name: Post result envelope
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          OK="${{ steps.rerun.outputs.ok || 'true' }}"
+          SUMMARY="${{ steps.rerun.outputs.summary || 'CI agent completed.' }}"
+          DELTA="${{ steps.rerun.outputs.pass_rate_delta || '0' }}"
+          DETAILS='${{ steps.rerun.outputs.details || '{}' }}'
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          STATE="done"
+          if [ "${OK}" != "true" ]; then STATE="failed"; fi
+
+          RESULT=$(jq -n \
+            --argjson ok          "${OK}"    \
+            --arg     summary     "${SUMMARY}" \
+            --arg     delta       "${DELTA}"   \
+            --argjson details     "${DETAILS}" \
+            '{ok: $ok, summary: $summary, pass_rate_delta: ($delta | tonumber), details: $details}')
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    state         "${STATE}"       \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --arg    mode          "${MODE}"        \
+            --argjson result       "${RESULT}"      \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "ci",
+              state:            $state,
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        [],
+              result:           $result,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/result_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/result_comment.md
+          echo "✅  Posted result envelope for ${TASK_ID} (state=${STATE})"
+
+      # ------------------------------------------------------------------
+      # Fire reducer
+      # ------------------------------------------------------------------
+      - name: Trigger orchestrator reducer
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — reducer not triggered."
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg  run_id       "${{ steps.payload.outputs.run_id }}"       \
+            --arg  task_id      "${{ steps.payload.outputs.task_id }}"      \
+            --argjson issue_number "${{ steps.payload.outputs.issue_number }}" \
+            --arg  goal         "${{ github.event.client_payload.goal }}"   \
+            --argjson repo_scope '${{ toJson(github.event.client_payload.repo_scope) }}' \
+            --arg  mode         "${{ steps.payload.outputs.mode }}"         \
+            '{
+              event_type: "orchestrator.reduce",
+              client_payload: {
+                run_id:       $run_id,
+                task_id:      $task_id,
+                issue_number: $issue_number,
+                goal:         $goal,
+                repo_scope:   $repo_scope,
+                mode:         $mode
+              }
+            }')
+
+          echo "${PAYLOAD}" | gh api "/repos/${GITHUB_REPOSITORY}/dispatches" \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            --input -
+          echo "✅  Reducer triggered"

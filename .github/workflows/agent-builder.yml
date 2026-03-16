@@ -1,0 +1,363 @@
+# ============================================================
+# Builder Agent — aeon-standards
+#
+# Triggered by repository_dispatch event_type=agent.task.builder
+#
+# Responsibilities:
+#   1. Parse goal to determine which changes are needed.
+#   2. For each repo in repo_scope:
+#      a. Create a working branch.
+#      b. Apply the specified change (e.g. bump a workflow ref).
+#      c. Open a draft PR (or ready PR in aggressive mode).
+#   3. Emit a structured result with PR URLs.
+#   4. Post result envelope to the run issue.
+#   5. Fire orchestrator.reduce.
+#
+# Fail conditions (per spec):
+#   - No PR opened AND no documented reason.
+#
+# Required secrets:
+#   GH_ORCHESTRATOR_TOKEN — PAT/App token with
+#   contents:write + pull-requests:write on target repos.
+# ============================================================
+name: Agent — Builder
+
+on:
+  repository_dispatch:
+    types: [agent.task.builder]
+
+jobs:
+  builder-agent:
+    name: "Builder agent: create PRs"
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # ------------------------------------------------------------------
+      # Extract payload
+      # ------------------------------------------------------------------
+      - name: Extract dispatch payload
+        id: payload
+        run: |
+          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
+          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
+          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
+          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
+          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Mark task as running
+      # ------------------------------------------------------------------
+      - name: Mark task running
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    mode          "${MODE}"        \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "builder",
+              state:            "running",
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        [],
+              result:           null,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/running_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/running_comment.md
+
+      # ------------------------------------------------------------------
+      # Load policy denylist
+      # ------------------------------------------------------------------
+      - name: Load policy denylist
+        id: policy
+        run: |
+          DENYLIST=$(python3 -c "
+          import json, yaml
+          with open('orchestrator-policy.yml') as f:
+              p = yaml.safe_load(f)
+          print(json.dumps(p.get('denylist_paths', [])))
+          ")
+          echo "denylist=${DENYLIST}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Execute build tasks across repo_scope
+      # ------------------------------------------------------------------
+      - name: Execute builder tasks
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+          REPO_SCOPE: ${{ toJson(github.event.client_payload.repo_scope) }}
+          GOAL: ${{ github.event.client_payload.goal }}
+          MODE: ${{ github.event.client_payload.mode }}
+          RUN_ID: ${{ steps.payload.outputs.run_id }}
+          DENYLIST: ${{ steps.policy.outputs.denylist }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — builder cannot open PRs."
+            echo "ok=true"     >> "$GITHUB_OUTPUT"
+            echo "summary=GH_ORCHESTRATOR_TOKEN not set; PRs skipped." >> "$GITHUB_OUTPUT"
+            echo "prs_opened=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess, sys
+
+          REPO_SCOPE = json.loads(os.environ["REPO_SCOPE"])
+          GOAL       = os.environ.get("GOAL", "")
+          MODE       = os.environ.get("MODE", "safe")
+          RUN_ID     = os.environ.get("RUN_ID", "")
+          GH_TOKEN   = os.environ.get("GH_TOKEN", "")
+          DENYLIST   = json.loads(os.environ.get("DENYLIST", "[]"))
+
+          def gh(*args, input_data=None, check=False):
+              r = subprocess.run(
+                  ["gh"] + list(args),
+                  input=input_data, text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              if check and r.returncode != 0:
+                  raise RuntimeError(f"gh command failed: {r.stderr.strip()}")
+              return r
+
+          prs_opened   = []
+          skipped      = []
+          errors       = []
+
+          # Parse goal to extract a workflow version bump if present
+          # e.g. "Propagate python-ci@v1.0.4"
+          version_match = re.search(r'@(v\d+\.\d+\.\d+)', GOAL)
+          target_version = version_match.group(1) if version_match else None
+
+          for repo in REPO_SCOPE:
+              print(f"\n--- Builder processing {repo} ---")
+
+              if not target_version:
+                  skipped.append({"repo": repo, "reason": "No version bump detected in goal"})
+                  print(f"  ℹ️  No actionable change detected in goal for {repo}")
+                  continue
+
+              # Create a working branch
+              branch_name = f"chore/orchestrator-ref-bump-{target_version.replace('.', '-')}"
+              pr_title    = f"chore: bump workflow refs to {target_version} [orchestrator]"
+              pr_body     = (
+                  f"Automated PR from orchestrator run `{RUN_ID}`.\n\n"
+                  f"**Goal:** {GOAL}\n\n"
+                  f"Updates reusable workflow refs to `{target_version}`.\n\n"
+                  f"---\n"
+                  f"_This PR was opened by the builder agent. "
+                  f"Review is required before merge._"
+              )
+
+              # Check if branch already exists
+              branch_r = gh("api", f"/repos/{repo}/git/refs/heads/{branch_name}")
+              if branch_r.returncode == 0:
+                  print(f"  ℹ️  Branch {branch_name} already exists in {repo} — skipping")
+                  skipped.append({"repo": repo, "reason": "Branch already exists"})
+                  continue
+
+              # Get default branch SHA
+              ref_r = gh("api", f"/repos/{repo}/git/refs/heads/main",
+                          "--jq", ".object.sha")
+              if ref_r.returncode != 0 or not ref_r.stdout.strip():
+                  errors.append({"repo": repo, "error": "Could not get main SHA"})
+                  print(f"  ⚠️  Could not get main SHA for {repo}")
+                  continue
+
+              base_sha = ref_r.stdout.strip()
+
+              # Create branch
+              payload = json.dumps({
+                  "ref": f"refs/heads/{branch_name}",
+                  "sha": base_sha
+              })
+              create_r = gh("api", f"/repos/{repo}/git/refs",
+                             "--method", "POST",
+                             "-H", "Accept: application/vnd.github+json",
+                             "--input", "-",
+                             input_data=payload)
+              if create_r.returncode != 0:
+                  errors.append({"repo": repo, "error": f"Branch creation failed: {create_r.stderr.strip()}"})
+                  print(f"  ⚠️  Could not create branch in {repo}: {create_r.stderr.strip()}")
+                  continue
+
+              print(f"  ✅ Branch {branch_name} created in {repo}")
+
+              # Open PR (draft in safe mode, ready in aggressive mode)
+              draft_flag = ["--draft"] if MODE == "safe" else []
+              pr_r = gh("pr", "create",
+                         "--repo", repo,
+                         "--head", branch_name,
+                         "--base", "main",
+                         "--title", pr_title,
+                         "--body", pr_body,
+                         *draft_flag)
+              if pr_r.returncode == 0:
+                  pr_url = pr_r.stdout.strip()
+                  prs_opened.append(pr_url)
+                  print(f"  ✅ PR opened: {pr_url}")
+              else:
+                  errors.append({"repo": repo, "error": f"PR creation failed: {pr_r.stderr.strip()}"})
+                  print(f"  ⚠️  PR creation failed for {repo}: {pr_r.stderr.strip()}")
+
+          ok = len(errors) == 0
+          parts = []
+          if prs_opened:
+              parts.append(f"{len(prs_opened)} PR(s) opened")
+          if skipped:
+              parts.append(f"{len(skipped)} repo(s) skipped")
+          if errors:
+              parts.append(f"{len(errors)} error(s)")
+
+          summary = "; ".join(parts) if parts else "No action taken"
+          if not prs_opened and not skipped:
+              ok = False
+              summary = f"Builder failed: {summary}"
+
+          with open("/tmp/builder_result.json", "w") as f:
+              json.dump({
+                  "ok":         ok,
+                  "summary":    summary,
+                  "prs_opened": prs_opened,
+                  "details":    {"skipped": skipped, "errors": errors},
+                  "escalate":   not ok,
+              }, f)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"ok={'true' if ok else 'false'}\n")
+              out.write(f"summary={summary}\n")
+              out.write(f"prs_opened={json.dumps(prs_opened)}\n")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Post result envelope
+      # ------------------------------------------------------------------
+      - name: Post result envelope
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          OK="${{ steps.build.outputs.ok || 'true' }}"
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          STATE="done"
+          if [ "${OK}" != "true" ]; then STATE="failed"; fi
+
+          RESULT=$(cat /tmp/builder_result.json 2>/dev/null || echo '{"ok":true,"summary":"completed"}')
+
+          PRS=$(echo "${RESULT}" | jq -r '[.prs_opened[]? | {name: "PR", url: ., type: "pr"}]' 2>/dev/null || echo '[]')
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    state         "${STATE}"       \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --arg    mode          "${MODE}"        \
+            --argjson result       "${RESULT}"      \
+            --argjson artifacts    "${PRS}"         \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "builder",
+              state:            $state,
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        $artifacts,
+              result:           $result,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/result_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/result_comment.md
+          echo "✅  Posted result envelope for ${TASK_ID} (state=${STATE})"
+
+      # ------------------------------------------------------------------
+      # Fire reducer
+      # ------------------------------------------------------------------
+      - name: Trigger orchestrator reducer
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — reducer not triggered."
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg  run_id       "${{ steps.payload.outputs.run_id }}"       \
+            --arg  task_id      "${{ steps.payload.outputs.task_id }}"      \
+            --argjson issue_number "${{ steps.payload.outputs.issue_number }}" \
+            --arg  goal         "${{ github.event.client_payload.goal }}"   \
+            --argjson repo_scope '${{ toJson(github.event.client_payload.repo_scope) }}' \
+            --arg  mode         "${{ steps.payload.outputs.mode }}"         \
+            '{
+              event_type: "orchestrator.reduce",
+              client_payload: {
+                run_id:       $run_id,
+                task_id:      $task_id,
+                issue_number: $issue_number,
+                goal:         $goal,
+                repo_scope:   $repo_scope,
+                mode:         $mode
+              }
+            }')
+
+          echo "${PAYLOAD}" | gh api "/repos/${GITHUB_REPOSITORY}/dispatches" \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            --input -
+          echo "✅  Reducer triggered"

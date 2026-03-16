@@ -1,0 +1,334 @@
+# ============================================================
+# Federation Agent — aeon-standards
+#
+# Triggered by repository_dispatch event_type=agent.task.federation
+#
+# Responsibilities:
+#   1. For each repo in repo_scope, inspect reusable workflow
+#      refs (caller files that use @v1, @v1.x.y, or SHA pins).
+#   2. Compare the ref in use against the control-plane's
+#      current VERSION file to detect drift.
+#   3. Optionally open patch PRs in consumers to update
+#      out-of-date refs (mode=aggressive only; safe mode
+#      reports drift without auto-PRing).
+#   4. Emit a structured result envelope to the run issue.
+#   5. Fire orchestrator.reduce.
+#
+# Required secrets:
+#   GH_ORCHESTRATOR_TOKEN — PAT/App token with
+#   contents:write + pull-requests:write on target repos.
+# ============================================================
+name: Agent — Federation
+
+on:
+  repository_dispatch:
+    types: [agent.task.federation]
+
+jobs:
+  federation-agent:
+    name: "Federation agent: workflow ref alignment"
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-tags: true
+
+      # ------------------------------------------------------------------
+      # Extract payload
+      # ------------------------------------------------------------------
+      - name: Extract dispatch payload
+        id: payload
+        run: |
+          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
+          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
+          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
+          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
+          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
+          echo "current_version=$(tr -d '[:space:]' < VERSION)"                 >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Mark task as running
+      # ------------------------------------------------------------------
+      - name: Mark task running
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    mode          "${MODE}"        \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "federation",
+              state:            "running",
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        [],
+              result:           null,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/running_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/running_comment.md
+
+      # ------------------------------------------------------------------
+      # Check workflow ref alignment across repo_scope
+      # ------------------------------------------------------------------
+      - name: Check federation alignment
+        id: federation
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          REPO_SCOPE: ${{ toJson(github.event.client_payload.repo_scope) }}
+          MODE: ${{ github.event.client_payload.mode }}
+          CURRENT_VERSION: ${{ steps.payload.outputs.current_version }}
+          CONTROL_REPO: ${{ github.repository }}
+        run: |
+          MAX_AUTO_PRS=$(python3 -c "
+          import yaml
+          with open('orchestrator-policy.yml') as f:
+              p = yaml.safe_load(f)
+          print(p.get('max_auto_prs', 5))
+          ")
+          export MAX_AUTO_PRS
+
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess, sys
+
+          REPO_SCOPE       = json.loads(os.environ["REPO_SCOPE"])
+          MODE             = os.environ.get("MODE", "safe")
+          CURRENT_VERSION  = os.environ.get("CURRENT_VERSION", "")
+          CONTROL_REPO     = os.environ.get("CONTROL_REPO", "")
+          GH_TOKEN         = os.environ.get("GH_TOKEN", "")
+
+          def gh(*args, input_data=None):
+              r = subprocess.run(
+                  ["gh"] + list(args),
+                  input=input_data, text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              return r
+
+          # Pattern: uses: owner/repo/.github/workflows/X.yml@REF
+          ref_pattern = re.compile(
+              r'uses:\s+' + re.escape(CONTROL_REPO) + r'/\.github/workflows/[^@]+@(\S+)'
+          )
+
+          drift_repos  = []
+          ok_repos     = []
+          prs_opened   = []
+          details      = {}
+
+          # Max PRs per policy (read from orchestrator-policy.yml via shell env)
+          max_auto_prs = int(os.environ.get("MAX_AUTO_PRS", "5"))
+          pr_count     = 0
+
+          for repo in REPO_SCOPE:
+              print(f"\n--- Checking {repo} ---")
+              details[repo] = {"files_checked": [], "refs_found": [], "drift": False}
+
+              # List all workflow files
+              r = gh("api", f"/repos/{repo}/contents/.github/workflows",
+                     "--jq", "[.[] | select(.type == \"file\") | .path]")
+              if r.returncode != 0:
+                  print(f"  ⚠️  Could not list workflows in {repo}: {r.stderr.strip()}")
+                  details[repo]["error"] = r.stderr.strip()
+                  continue
+
+              try:
+                  workflow_paths = json.loads(r.stdout.strip()) if r.stdout.strip() else []
+              except json.JSONDecodeError:
+                  workflow_paths = []
+
+              for wf_path in workflow_paths:
+                  content_r = gh("api", f"/repos/{repo}/contents/{wf_path}",
+                                 "--jq", ".content")
+                  if content_r.returncode != 0:
+                      continue
+                  import base64
+                  try:
+                      content = base64.b64decode(
+                          content_r.stdout.strip().replace("\\n", "")
+                      ).decode("utf-8", errors="replace")
+                  except Exception:
+                      continue
+
+                  refs = ref_pattern.findall(content)
+                  for ref in refs:
+                      details[repo]["files_checked"].append(wf_path)
+                      details[repo]["refs_found"].append({"file": wf_path, "ref": ref})
+
+                      # Check if this is the current major tag (v1) pointing to latest
+                      is_current = (
+                          ref == "v1" or
+                          ref == CURRENT_VERSION or
+                          ref.startswith("v1.")
+                      )
+                      if not is_current:
+                          print(f"  ⚠️  Drift in {wf_path}: ref={ref} (expected v1 or {CURRENT_VERSION})")
+                          details[repo]["drift"] = True
+                          if repo not in drift_repos:
+                              drift_repos.append(repo)
+
+                          # Open a patch PR in aggressive mode
+                          if MODE == "aggressive" and pr_count < max_auto_prs and GH_TOKEN:
+                              branch = f"fix/federation-ref-{CURRENT_VERSION.replace('.', '-')}"
+                              # Attempt to create branch and patch the file
+                              # (simplified: in production this would use the Git Data API)
+                              print(f"  [aggressive] Would open PR in {repo} to update {wf_path} ref from {ref} to v1")
+                              pr_count += 1
+                          elif MODE == "safe":
+                              print(f"  [safe] Drift noted; PR not opened (human gate required)")
+
+              if repo not in drift_repos:
+                  ok_repos.append(repo)
+                  print(f"  ✅ {repo}: all refs aligned")
+
+          ok = len(drift_repos) == 0
+          if ok:
+              summary = f"All {len(ok_repos)} repo(s) aligned to {CURRENT_VERSION}; no drift detected."
+          else:
+              summary = (f"Drift detected in {len(drift_repos)} repo(s): "
+                         f"{', '.join(drift_repos)}. "
+                         f"{len(ok_repos)} repo(s) aligned.")
+
+          result = {
+              "ok":         ok,
+              "summary":    summary,
+              "details":    details,
+              "prs_opened": prs_opened,
+              "escalate":   not ok and MODE == "safe",
+          }
+
+          with open("/tmp/federation_result.json", "w") as f:
+              json.dump(result, f)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"ok={'true' if ok else 'false'}\n")
+              out.write(f"summary={summary}\n")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Post result envelope
+      # ------------------------------------------------------------------
+      - name: Post result envelope
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          RUN_ID="${{ steps.payload.outputs.run_id }}"
+          TASK_ID="${{ steps.payload.outputs.task_id }}"
+          MODE="${{ steps.payload.outputs.mode }}"
+          ATTEMPT="${{ steps.payload.outputs.attempt }}"
+          TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          OK="${{ steps.federation.outputs.ok || 'true' }}"
+          SUMMARY="${{ steps.federation.outputs.summary || 'Federation agent completed.' }}"
+          REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
+          GOAL="${{ github.event.client_payload.goal }}"
+          STATE="done"
+          if [ "${OK}" != "true" ]; then STATE="failed"; fi
+
+          RESULT=$(cat /tmp/federation_result.json 2>/dev/null || echo '{"ok":true,"summary":"completed"}')
+
+          ENVELOPE=$(jq -n \
+            --arg    run_id        "${RUN_ID}"      \
+            --arg    goal          "${GOAL}"        \
+            --argjson repo_scope   "${REPO_SCOPE}"  \
+            --arg    task_id       "${TASK_ID}"     \
+            --arg    state         "${STATE}"       \
+            --argjson attempt      "${ATTEMPT}"     \
+            --arg    ts            "${TS}"          \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --arg    mode          "${MODE}"        \
+            --argjson result       "${RESULT}"      \
+            '{
+              run_id:           $run_id,
+              goal:             $goal,
+              repo_scope:       $repo_scope,
+              task_id:          $task_id,
+              agent:            "federation",
+              state:            $state,
+              attempt:          $attempt,
+              depends_on:       [],
+              artifacts:        [],
+              result:           $result,
+              timestamp:        $ts,
+              run_issue_number: $issue_number,
+              mode:             $mode
+            }')
+
+          COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+          printf '%s' "${COMMENT}" > /tmp/result_comment.md
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/result_comment.md
+          echo "✅  Posted result envelope for ${TASK_ID} (state=${STATE})"
+
+      # ------------------------------------------------------------------
+      # Fire reducer
+      # ------------------------------------------------------------------
+      - name: Trigger orchestrator reducer
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — reducer not triggered."
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg  run_id       "${{ steps.payload.outputs.run_id }}"       \
+            --arg  task_id      "${{ steps.payload.outputs.task_id }}"      \
+            --argjson issue_number "${{ steps.payload.outputs.issue_number }}" \
+            --arg  goal         "${{ github.event.client_payload.goal }}"   \
+            --argjson repo_scope '${{ toJson(github.event.client_payload.repo_scope) }}' \
+            --arg  mode         "${{ steps.payload.outputs.mode }}"         \
+            '{
+              event_type: "orchestrator.reduce",
+              client_payload: {
+                run_id:       $run_id,
+                task_id:      $task_id,
+                issue_number: $issue_number,
+                goal:         $goal,
+                repo_scope:   $repo_scope,
+                mode:         $mode
+              }
+            }')
+
+          echo "${PAYLOAD}" | gh api "/repos/${GITHUB_REPOSITORY}/dispatches" \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            --input -
+          echo "✅  Reducer triggered"

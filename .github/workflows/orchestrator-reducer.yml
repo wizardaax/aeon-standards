@@ -1,0 +1,355 @@
+# ============================================================
+# Orchestrator Reducer — aeon-standards
+#
+# Aggregates completed task results and drives the run to
+# its terminal state (DONE | FAILED | ESCALATED).
+#
+# Trigger modes:
+#   1. repository_dispatch type=orchestrator.reduce
+#      Fired by each agent after it posts its result envelope.
+#   2. issue_comment (created)
+#      Catches "/approve <run_id>" and "/abort <run_id>"
+#      operator commands.
+#
+# On each run it:
+#   1. Finds the run issue (via run_id in the dispatch payload
+#      or by scanning the issue referenced in a comment).
+#   2. Parses all orchestrator:envelope comments on that issue.
+#   3. Determines which tasks are done and which are unblocked.
+#   4. Dispatches newly unblocked tasks via repository_dispatch.
+#   5. When all tasks reach done/failed, posts a final summary
+#      and closes the issue (or escalates if required).
+#
+# Required secret:
+#   GH_ORCHESTRATOR_TOKEN — same PAT/App token as dispatch.
+# ============================================================
+name: Orchestrator Reducer
+
+on:
+  repository_dispatch:
+    types: [orchestrator.reduce]
+  issue_comment:
+    types: [created]
+
+jobs:
+  reduce:
+    name: Reduce task results and advance run state
+    runs-on: ubuntu-latest
+    # Skip comment-triggered runs that are not on orchestrator issues
+    # (checked in the first step via an output gate).
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # ------------------------------------------------------------------
+      # Gate: determine whether this run should proceed
+      # ------------------------------------------------------------------
+      - name: Resolve run context
+        id: ctx
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          EVENT="${{ github.event_name }}"
+
+          if [ "${EVENT}" = "repository_dispatch" ]; then
+            RUN_ID="${{ github.event.client_payload.run_id }}"
+            ISSUE_NUMBER="${{ github.event.client_payload.issue_number }}"
+            COMMAND=""
+          elif [ "${EVENT}" = "issue_comment" ]; then
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+            COMMENT_BODY="${{ github.event.comment.body }}"
+
+            # Check if the issue has the orchestrator:run label
+            HAS_LABEL=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/labels" \
+              --jq '[.[].name] | contains(["orchestrator:run"])' 2>/dev/null || echo "false")
+
+            if [ "${HAS_LABEL}" != "true" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Issue #${ISSUE_NUMBER} is not an orchestrator run — skipping."
+              exit 0
+            fi
+
+            # Extract run_id from the issue body anchor comment
+            RUN_ID=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" \
+              --jq '.body' | grep -oP '(?<=run_id=")[^"]+' | head -1 || echo "")
+
+            # Parse operator command (/approve or /abort)
+            COMMAND=$(echo "${COMMENT_BODY}" | grep -oP '^/(approve|abort)\s+\S+' | head -1 || echo "")
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "run_id=${RUN_ID}"           >> "$GITHUB_OUTPUT"
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "command=${COMMAND}"           >> "$GITHUB_OUTPUT"
+          echo "skip=false"                  >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Handle operator commands (/approve, /abort)
+      # ------------------------------------------------------------------
+      - name: Handle operator command
+        if: steps.ctx.outputs.skip != 'true' && steps.ctx.outputs.command != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          COMMAND="${{ steps.ctx.outputs.command }}"
+          ISSUE_NUMBER="${{ steps.ctx.outputs.issue_number }}"
+          RUN_ID="${{ steps.ctx.outputs.run_id }}"
+          ACTOR="${{ github.event.comment.user.login }}"
+
+          echo "Operator command: ${COMMAND} by @${ACTOR}"
+
+          if echo "${COMMAND}" | grep -q '^/approve'; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "human-gate:pending" \
+              --add-label    "human-gate:approved" 2>/dev/null || true
+            gh issue comment "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --body "✅ **Approved** by @${ACTOR} — merge gate lifted for run \`${RUN_ID}\`."
+            echo "Run ${RUN_ID} approved by @${ACTOR}"
+
+          elif echo "${COMMAND}" | grep -q '^/abort'; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "state:running" \
+              --add-label    "state:failed"  2>/dev/null || true
+            gh issue comment "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --body "🛑 **Aborted** by @${ACTOR} — run \`${RUN_ID}\` cancelled."
+            gh issue close "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --reason "not planned" 2>/dev/null || true
+            echo "Run ${RUN_ID} aborted by @${ACTOR}"
+          fi
+
+      # ------------------------------------------------------------------
+      # Parse all task envelopes from the issue
+      # ------------------------------------------------------------------
+      - name: Parse task envelopes
+        id: parse
+        if: steps.ctx.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.ctx.outputs.issue_number }}"
+
+          # Fetch all comments and extract orchestrator:envelope blocks
+          gh api "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --paginate \
+            --jq '.[].body' > /tmp/all_comments.txt
+
+          python3 - <<'PYEOF'
+          import re, json, sys
+
+          with open("/tmp/all_comments.txt") as f:
+              raw = f.read()
+
+          # Split on the NDJSON-like boundary (each comment body ends with a newline in jq output)
+          envelope_pattern = re.compile(
+              r'<!--\s*orchestrator:envelope[^>]*-->\s*```json\s*(\{.*?\})\s*```',
+              re.DOTALL
+          )
+
+          envelopes = {}
+          for m in envelope_pattern.finditer(raw):
+              try:
+                  env = json.loads(m.group(1))
+                  task_id = env.get("task_id")
+                  if not task_id:
+                      continue
+                  # Keep the most recent envelope per task_id (highest attempt)
+                  if task_id not in envelopes or env.get("attempt", 1) >= envelopes[task_id].get("attempt", 1):
+                      envelopes[task_id] = env
+              except json.JSONDecodeError:
+                  pass
+
+          with open("/tmp/envelopes.json", "w") as f:
+              json.dump(envelopes, f, indent=2)
+
+          print(f"Parsed {len(envelopes)} task envelope(s): {list(envelopes.keys())}")
+          PYEOF
+
+          echo "envelopes_file=/tmp/envelopes.json" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Determine run state and dispatch unblocked tasks
+      # ------------------------------------------------------------------
+      - name: Advance run state
+        if: steps.ctx.outputs.skip != 'true'
+        id: advance
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
+          RUN_ID: ${{ steps.ctx.outputs.run_id }}
+          GOAL: ${{ github.event.client_payload.goal }}
+          REPO_SCOPE: ${{ github.event.client_payload.repo_scope }}
+          MODE: ${{ github.event.client_payload.mode }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+
+          GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+          GH_TOKEN          = os.environ.get("GH_TOKEN", "")
+          ISSUE_NUMBER      = os.environ["ISSUE_NUMBER"]
+          RUN_ID            = os.environ["RUN_ID"]
+          GOAL              = os.environ.get("GOAL", "")
+          REPO_SCOPE        = os.environ.get("REPO_SCOPE", "[]")
+          MODE              = os.environ.get("MODE", "safe")
+
+          with open("/tmp/envelopes.json") as f:
+              envelopes = json.load(f)
+
+          done_tasks    = {k for k, v in envelopes.items() if v.get("state") == "done"}
+          failed_tasks  = {k for k, v in envelopes.items() if v.get("state") == "failed"}
+          running_tasks = {k for k, v in envelopes.items() if v.get("state") in ("queued", "running")}
+          all_tasks     = set(envelopes.keys())
+
+          # Find tasks that are queued and whose dependencies are all done
+          newly_unblocked = []
+          for task_id, env in envelopes.items():
+              if env.get("state") != "queued":
+                  continue
+              deps = set(env.get("depends_on", []))
+              if deps and deps.issubset(done_tasks):
+                  newly_unblocked.append((task_id, env.get("agent")))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"newly_unblocked={json.dumps(newly_unblocked)}\n")
+
+          # Determine overall run state
+          all_resolved = (done_tasks | failed_tasks) == all_tasks
+          any_failed   = bool(failed_tasks)
+
+          if all_resolved:
+              final_state = "failed" if any_failed else "done"
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write(f"final_state={final_state}\n")
+              print(f"All tasks resolved → run state: {final_state}")
+          else:
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("final_state=\n")
+              print(f"Run still in progress. Done: {done_tasks}, Failed: {failed_tasks}, "
+                    f"Running: {running_tasks}, Unblocked: {newly_unblocked}")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Dispatch newly unblocked tasks
+      # ------------------------------------------------------------------
+      - name: Dispatch unblocked tasks
+        if: >
+          steps.ctx.outputs.skip != 'true' &&
+          steps.advance.outputs.final_state == '' &&
+          steps.advance.outputs.newly_unblocked != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+          RUN_ID: ${{ steps.ctx.outputs.run_id }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.issue_number }}
+          GOAL: ${{ github.event.client_payload.goal }}
+          REPO_SCOPE: ${{ github.event.client_payload.repo_scope }}
+          MODE: ${{ github.event.client_payload.mode }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — cannot dispatch unblocked tasks."
+            exit 0
+          fi
+
+          RUN_ID="${{ steps.ctx.outputs.run_id }}"
+          ISSUE_NUMBER="${{ steps.ctx.outputs.issue_number }}"
+          GOAL="${{ github.event.client_payload.goal }}"
+          REPO_SCOPE="${{ github.event.client_payload.repo_scope }}"
+          MODE="${{ github.event.client_payload.mode }}"
+          UNBLOCKED='${{ steps.advance.outputs.newly_unblocked }}'
+
+          echo "${UNBLOCKED}" | python3 -c "
+          import json, sys, subprocess, os
+
+          GITHUB_REPOSITORY = os.environ['GITHUB_REPOSITORY']
+          unblocked = json.load(sys.stdin)
+
+          for task_id, agent in unblocked:
+              payload = json.dumps({
+                  'event_type': f'agent.task.{agent}',
+                  'client_payload': {
+                      'run_id':       os.environ['RUN_ID'],
+                      'task_id':      task_id,
+                      'issue_number': int(os.environ['ISSUE_NUMBER']),
+                      'goal':         os.environ.get('GOAL', ''),
+                      'repo_scope':   json.loads(os.environ.get('REPO_SCOPE', '[]')),
+                      'mode':         os.environ.get('MODE', 'safe'),
+                  }
+              })
+              result = subprocess.run(
+                  ['gh', 'api', f'/repos/{GITHUB_REPOSITORY}/dispatches',
+                   '--method', 'POST',
+                   '-H', 'Accept: application/vnd.github+json',
+                   '--input', '-'],
+                  input=payload, text=True, capture_output=True
+              )
+              if result.returncode == 0:
+                  print(f'✅  Dispatched {agent} task {task_id}')
+              else:
+                  print(f'::error::Failed to dispatch {agent} task {task_id}: {result.stderr}')
+          "
+
+      # ------------------------------------------------------------------
+      # Post final summary when all tasks have resolved
+      # ------------------------------------------------------------------
+      - name: Post final summary
+        if: steps.ctx.outputs.skip != 'true' && steps.advance.outputs.final_state != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          FINAL_STATE: ${{ steps.advance.outputs.final_state }}
+        run: |
+          ISSUE_NUMBER="${{ steps.ctx.outputs.issue_number }}"
+          RUN_ID="${{ steps.ctx.outputs.run_id }}"
+
+          python3 - <<'PYEOF'
+          import json, os, subprocess
+
+          with open("/tmp/envelopes.json") as f:
+              envelopes = json.load(f)
+
+          lines = ["## 🏁 Run Complete\n"]
+          for task_id in sorted(envelopes):
+              env = envelopes[task_id]
+              state  = env.get("state", "unknown")
+              agent  = env.get("agent", "?")
+              result = env.get("result") or {}
+              icon   = "✅" if state == "done" else "❌"
+              summary = result.get("summary", "_no result_")
+              lines.append(f"- {icon} **{task_id}** ({agent}): {summary}")
+
+          final_state = os.environ["FINAL_STATE"]
+          lines.append(f"\n**Overall run status: `{final_state.upper()}`**")
+
+          # Check if any task requires escalation
+          escalate = any(
+              (env.get("result") or {}).get("escalate", False)
+              for env in envelopes.values()
+          )
+          if escalate:
+              lines.append("\n⚠️ **One or more tasks require human review. "
+                           "Please check the task results above.**")
+
+          comment_body = "\n".join(lines)
+          with open("/tmp/final_summary.md", "w") as f:
+              f.write(comment_body)
+          PYEOF
+
+          gh issue comment "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/final_summary.md
+
+          # Update labels and close issue
+          if [ "${FINAL_STATE}" = "done" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "state:running" \
+              --add-label    "state:done" 2>/dev/null || true
+            gh issue close "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --reason "completed" 2>/dev/null || true
+          else
+            gh issue edit "${ISSUE_NUMBER}" --repo "$GITHUB_REPOSITORY" \
+              --remove-label "state:running" \
+              --add-label    "state:failed" 2>/dev/null || true
+          fi
+          echo "Run ${RUN_ID} finalised as ${FINAL_STATE}"
