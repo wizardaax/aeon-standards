@@ -13,6 +13,20 @@ _Changes merged to `main` that have not yet been tagged as a release._
 
 ---
 
+## [v1.0.1] — 2026-03-16
+
+### Changed
+
+- Hardened control-plane release: governed/manual release flow enforced — `v1`
+  tag no longer auto-moves on push to `main`; only advances via explicit
+  `release-v1.yml` `workflow_dispatch` trigger.
+- Action SHAs pinned across all workflow files for supply-chain security.
+- Self-test CI (`ci-self-test.yml`) validates reusable workflow YAML on every
+  push and pull request.
+- `docs/VERSIONING.md` and `CHANGELOG.md` synced to reflect governance policy.
+
+---
+
 ## [v1.0.0] — 2026-03-16
 
 ### Added
@@ -40,5 +54,6 @@ _Changes merged to `main` that have not yet been tagged as a release._
   uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
   ```
 
-[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...HEAD
+[v1.0.1]: https://github.com/wizardaax/aeon-standards/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/wizardaax/aeon-standards/releases/tag/v1.0.0
