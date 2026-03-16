@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v1.0.5] — 2026-03-16
+
 ### Added
 
 - **GitHub-native orchestrator framework** (`A+ design`): multi-agent orchestration
   using only GitHub primitives (Issues, Labels, Actions, `repository_dispatch`).
-  No external infrastructure required.
+  No external infrastructure required.  Annotation: _A+ GitHub-native orchestrator
+  framework (PR #14)_.
 
   New workflow files:
   - `orchestrator-dispatch.yml` — entrypoint; creates run issue, posts task envelopes,
@@ -42,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `ci-self-test.yml`: extended yamllint step to validate all seven new workflow files.
+- `orchestrator-policy.yml`: added `lint-workflows` to `required_status_checks` so
+  the control-plane self-test is a mandatory merge gate alongside `python-ci` and
+  `security` (per strategic hardening recommendation).
 
 ## [v1.0.4] — 2026-03-16
 
@@ -133,7 +139,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
   ```
 
-[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.5...HEAD
+[v1.0.5]: https://github.com/wizardaax/aeon-standards/compare/v1.0.4...v1.0.5
 [v1.0.4]: https://github.com/wizardaax/aeon-standards/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/wizardaax/aeon-standards/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...v1.0.2

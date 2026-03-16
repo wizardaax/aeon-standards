@@ -50,6 +50,7 @@ denylist_paths:
 required_status_checks:
   - "python-ci"
   - "security"
+  - "lint-workflows"
 
 # ---------------------------------------------------------------------------
 # Authorised target repositories
