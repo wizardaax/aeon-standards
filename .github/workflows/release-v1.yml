@@ -1,19 +1,29 @@
 # ============================================================
 # Release tagging workflow — aeon-standards
 #
-# Manually triggered (workflow_dispatch) to cut an approved
-# release.  On each run it:
+# Two trigger modes:
+#
+#   1. workflow_dispatch (manual) — maintainer supplies
+#      patch_version and release_note directly.
+#
+#   2. push to main with VERSION file changed — the version
+#      is read from the VERSION file at the repo root.
+#      This mode is idempotent: if the patch tag already
+#      exists the tagging step is skipped gracefully.
+#
+# On each run it:
 #   1. Creates an immutable patch tag  (e.g. v1.0.1)
 #   2. Force-updates the mutable major tag  (v1) to the same
 #      commit, so downstream consumers using @v1 stay current.
+#   3. Verifies both tags point to the same commit.
 #
 # The tag is what downstream repos resolve when they use:
 #   uses: wizardaax/aeon-standards/.github/workflows/python-ci.yml@v1
 #
 # Governance note: the v1 tag is intentionally NOT moved on
 # every push to main.  It only moves when a maintainer
-# explicitly triggers this workflow, providing a release note
-# and the target patch version.
+# explicitly triggers this workflow OR merges a PR that bumps
+# the VERSION file.
 # ============================================================
 name: Release v1
 
@@ -29,6 +39,10 @@ on:
         required: false
         default: "chore: release"
         type: string
+  push:
+    branches: [main]
+    paths:
+      - VERSION
 
 jobs:
   release:
@@ -44,9 +58,22 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Resolve version and release note
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            PATCH_VERSION="$(tr -d '[:space:]' < VERSION)"
+            RELEASE_NOTE="chore: release ${PATCH_VERSION}"
+          else
+            PATCH_VERSION="${{ inputs.patch_version }}"
+            RELEASE_NOTE="${{ inputs.release_note }}"
+          fi
+          echo "patch_version=${PATCH_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_note=${RELEASE_NOTE}"   >> "$GITHUB_OUTPUT"
+
       - name: Validate patch_version format
         run: |
-          echo "${{ inputs.patch_version }}" | grep -Eq '^v1\.[0-9]+\.[0-9]+$' \
+          echo "${{ steps.resolve.outputs.patch_version }}" | grep -Eq '^v1\.[0-9]+\.[0-9]+$' \
             || { echo "ERROR: patch_version must match v1.X.Y (e.g. v1.0.1)" >&2; exit 1; }
 
       - name: Verify running from main
@@ -56,12 +83,41 @@ jobs:
             exit 1
           fi
 
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          PATCH="${{ steps.resolve.outputs.patch_version }}"
+          if git ls-remote --tags origin "refs/tags/${PATCH}" | grep -q "${PATCH}"; then
+            echo "Tag ${PATCH} already exists — skipping tag creation."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create immutable patch tag and update v1
+        if: steps.check_tag.outputs.skip != 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ inputs.patch_version }}" \
-            -m "aeon-standards ${{ inputs.patch_version }}: ${{ inputs.release_note }}"
-          git push origin "${{ inputs.patch_version }}"
-          git tag -fa v1 -m "aeon-standards v1 -> ${{ inputs.patch_version }}"
+          git tag -a "${{ steps.resolve.outputs.patch_version }}" \
+            -m "aeon-standards ${{ steps.resolve.outputs.patch_version }}: ${{ steps.resolve.outputs.release_note }}"
+          git push origin "${{ steps.resolve.outputs.patch_version }}"
+          git tag -fa v1 -m "aeon-standards v1 -> ${{ steps.resolve.outputs.patch_version }}"
           git push origin v1 --force
+
+      - name: Confirm tags point to the same commit
+        run: |
+          PATCH="${{ steps.resolve.outputs.patch_version }}"
+          git fetch --tags --force origin
+          PATCH_SHA=$(git rev-parse "${PATCH}^{}" 2>/dev/null || echo "NOT_FOUND")
+          V1_SHA=$(git rev-parse "v1^{}" 2>/dev/null || echo "NOT_FOUND")
+          echo "=== Tag verification ==="
+          echo "${PATCH} -> ${PATCH_SHA}"
+          echo "v1       -> ${V1_SHA}"
+          if [ "${PATCH_SHA}" = "NOT_FOUND" ]; then
+            echo "ERROR: tag ${PATCH} not found after release" >&2; exit 1
+          fi
+          if [ "${PATCH_SHA}" != "${V1_SHA}" ]; then
+            echo "ERROR: ${PATCH} (${PATCH_SHA}) and v1 (${V1_SHA}) do not match" >&2; exit 1
+          fi
+          echo "✅  ${PATCH} and v1 both point to ${PATCH_SHA}"

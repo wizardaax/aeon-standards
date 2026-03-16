@@ -68,20 +68,27 @@ reproducible, pinned references.
 
 1. All changes land on `main` via pull requests using
    [Conventional Commits](https://www.conventionalcommits.org/).
-2. After merging a non-breaking change, a maintainer runs the
-   **Release v1** workflow (`release-v1.yml`) via the GitHub Actions
-   **"Run workflow"** button, supplying:
-   - `patch_version` — the immutable tag to create (e.g. `v1.0.1`)
+2. The [CHANGELOG](../CHANGELOG.md) entry is updated in the PR before merging.
+3. To cut a release, **bump the `VERSION` file** at the repo root (e.g. change
+   `v1.0.1` → `v1.0.2`) in the same PR. When the PR is merged to `main`, the
+   `Release v1` workflow (`release-v1.yml`) detects the `VERSION` change and
+   automatically:
+   - Creates the immutable patch tag (e.g. `v1.0.2`)
+   - Force-updates the mutable `v1` tag to the same commit
+   - Verifies both tags point to the identical commit
+
+   The workflow is **idempotent**: if the tag already exists it skips the
+   tagging step without error, then re-confirms the tags are aligned.
+
+4. Alternatively, a maintainer can trigger the **Release v1** workflow manually
+   via the GitHub Actions **"Run workflow"** button, supplying:
+   - `patch_version` — the immutable tag to create (e.g. `v1.0.2`)
    - `release_note` — a one-line annotation (e.g. `fix: pin action SHAs`)
 
-   The workflow automatically:
-   - Creates the immutable patch tag (e.g. `v1.0.1`)
-   - Force-updates the mutable `v1` tag to the same commit
-3. The [CHANGELOG](../CHANGELOG.md) entry is updated in the PR before merging.
-
-> **Governance note:** The `v1` tag is **never** moved automatically on push
-> to `main`.  It only advances when a maintainer explicitly triggers the
-> release workflow.  This prevents accidental breakage of downstream consumers.
+> **Governance note:** The `v1` tag is **not** moved on every push to `main`.
+> It only advances when a maintainer merges a PR that bumps the `VERSION` file,
+> or explicitly triggers the release workflow via `workflow_dispatch`.
+> This prevents accidental breakage of downstream consumers.
 
 ---
 
@@ -137,6 +144,9 @@ Changes included:
 - Action SHAs pinned across all workflow files
 - `ci-self-test.yml` self-validation CI added
 - CHANGELOG and VERSIONING policy synced
+- `VERSION` file introduced; `release-v1.yml` now triggers automatically on
+  `push` to `main` when `VERSION` changes, in addition to `workflow_dispatch`
 
-Tagged via `release-v1.yml` `workflow_dispatch` with annotation:
-`"Hardened control-plane release"`
+Tagged via the `VERSION` file mechanism: `VERSION` set to `v1.0.1` and merged
+to `main`, which triggered `release-v1.yml` to create the immutable `v1.0.1`
+tag and advance the mutable `v1` tag to the same commit.
