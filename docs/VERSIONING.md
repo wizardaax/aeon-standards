@@ -83,7 +83,7 @@ reproducible, pinned references.
 4. Alternatively, a maintainer can trigger the **Release v1** workflow manually
    via the GitHub Actions **"Run workflow"** button, supplying:
    - `patch_version` — the immutable tag to create (e.g. `v1.0.2`)
-   - `release_note` — a one-line annotation (e.g. `fix: pin action SHAs`)
+   - `annotation` — a one-line annotation (e.g. `fix: pin action SHAs`)
 
 > **Governance note:** The `v1` tag is **not** moved on every push to `main`.
 > It only advances when a maintainer merges a PR that bumps the `VERSION` file,
