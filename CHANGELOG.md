@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.0.4] — 2026-03-16
+
+### Added
+
+- `rerun-downstream.yml`: manually-dispatched workflow that verifies `v1` and
+  `v1.X.Y` tags point to the same commit, then reruns the latest failed workflow
+  run in a specified downstream repository so consumers can recover from
+  transient failures without leaving the platform.
+
+### Changed
+
+- `ci-self-test.yml`: added `rerun-downstream.yml` to the yamllint validation
+  step so the new workflow file is syntax-checked on every push and pull request.
+
+---
+
 ## [v1.0.3] — 2026-03-16
 
 ### Changed
@@ -85,7 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
   ```
 
-[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.4...HEAD
+[v1.0.4]: https://github.com/wizardaax/aeon-standards/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/wizardaax/aeon-standards/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...v1.0.2
 [v1.0.1]: https://github.com/wizardaax/aeon-standards/compare/v1.0.0...v1.0.1
