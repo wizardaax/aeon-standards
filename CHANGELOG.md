@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.0.2] — 2026-03-16
+
+### Changed
+
+- VERSION bumped to v1.0.2 to re-align `v1` and patch tags with the current
+  `main` HEAD after post-#5 doc-churn PRs (#6, #7, #8) advanced `main` without
+  triggering a release.  No functional workflow changes; this commit solely
+  advances the mutable `v1` pointer to the latest commit.
+
+---
+
 ## [v1.0.1] — 2026-03-16
 
 ### Changed
@@ -60,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
   ```
 
-[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.2...HEAD
+[v1.0.2]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...v1.0.2
 [v1.0.1]: https://github.com/wizardaax/aeon-standards/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/wizardaax/aeon-standards/releases/tag/v1.0.0
