@@ -1,0 +1,37 @@
+# ============================================================
+# Release tagging workflow — aeon-standards
+#
+# Creates (or force-updates) the mutable `v1` major-version tag
+# on every push to main, keeping it pointing at the latest
+# backwards-compatible commit.
+#
+# The tag is what downstream repos resolve when they use:
+#   uses: wizardaax/aeon-standards/.github/workflows/python-ci.yml@v1
+# ============================================================
+name: Tag v1
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tag-v1:
+    name: Create / update v1 tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to push a tag
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Create or force-update v1 tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -fa v1 -m "aeon-standards v1"
+          git push origin v1 --force
