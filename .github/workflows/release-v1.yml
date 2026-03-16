@@ -4,7 +4,7 @@
 # Two trigger modes:
 #
 #   1. workflow_dispatch (manual) — maintainer supplies
-#      patch_version and release_note directly.
+#      patch_version and annotation directly.
 #
 #   2. push to main with VERSION file changed — the version
 #      is read from the VERSION file at the repo root.
@@ -34,7 +34,7 @@ on:
         description: "Immutable patch tag to create (e.g. v1.0.1)"
         required: true
         type: string
-      release_note:
+      annotation:
         description: "One-line summary for the tag annotation"
         required: false
         default: "chore: release"
@@ -66,7 +66,7 @@ jobs:
             RELEASE_NOTE="chore: release ${PATCH_VERSION}"
           else
             PATCH_VERSION="${{ inputs.patch_version }}"
-            RELEASE_NOTE="${{ inputs.release_note }}"
+            RELEASE_NOTE="${{ inputs.annotation }}"
           fi
           echo "patch_version=${PATCH_VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_note=${RELEASE_NOTE}"   >> "$GITHUB_OUTPUT"
