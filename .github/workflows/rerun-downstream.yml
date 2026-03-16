@@ -84,7 +84,7 @@ jobs:
 
           # Also confirm via ls-remote so the output mirrors the
           # canonical verification command from the issue:
-          #   git ls-remote … refs/tags/v1 refs/tags/v1.0.3
+          #   git ls-remote … refs/tags/v1 refs/tags/v1.0.4
           echo ""
           echo "=== ls-remote confirmation ==="
           git ls-remote origin "refs/tags/v1" "refs/tags/${PATCH}"

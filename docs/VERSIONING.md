@@ -150,3 +150,21 @@ Changes included:
 Tagged via the `VERSION` file mechanism: `VERSION` set to `v1.0.1` and merged
 to `main`, which triggered `release-v1.yml` to create the immutable `v1.0.1`
 tag and advance the mutable `v1` tag to the same commit.
+
+## Patch Release (`v1.0.4`)
+
+Control-plane closeout release. This tag was cut after PR #12 to add the
+`rerun-downstream.yml` workflow and complete the v1 stabilisation.
+
+Changes included:
+- `rerun-downstream.yml`: manually-dispatched workflow that verifies `v1` and
+  patch tags point to the same commit, then reruns the latest failed workflow
+  run in each consumer repository
+- `ci-self-test.yml`: `rerun-downstream.yml` added to the yamllint validation
+  step
+- `README.md`: repository structure updated to include `rerun-downstream.yml`
+- `docs/VERSIONING.md`: this entry added to record the v1.0.4 closeout
+
+Tagged via the `VERSION` file mechanism: `VERSION` set to `v1.0.4` and merged
+to `main`, which triggered `release-v1.yml` to create the immutable `v1.0.4`
+tag and advance the mutable `v1` tag to the same commit.
