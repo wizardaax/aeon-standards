@@ -68,14 +68,20 @@ reproducible, pinned references.
 
 1. All changes land on `main` via pull requests using
    [Conventional Commits](https://www.conventionalcommits.org/).
-2. After merging a non-breaking change, a maintainer:
-   - Creates an immutable tag (e.g. `v1.3.0`) from the merge commit.
-   - Force-updates the mutable `v1` tag to the same commit:
-     ```bash
-     git tag -fa v1 -m "chore: update v1 pointer to v1.3.0"
-     git push origin v1 --force
-     ```
-3. The [CHANGELOG](../CHANGELOG.md) entry is updated before tagging.
+2. After merging a non-breaking change, a maintainer runs the
+   **Release v1** workflow (`release-v1.yml`) via the GitHub Actions
+   **"Run workflow"** button, supplying:
+   - `patch_version` — the immutable tag to create (e.g. `v1.0.1`)
+   - `release_note` — a one-line annotation (e.g. `fix: pin action SHAs`)
+
+   The workflow automatically:
+   - Creates the immutable patch tag (e.g. `v1.0.1`)
+   - Force-updates the mutable `v1` tag to the same commit
+3. The [CHANGELOG](../CHANGELOG.md) entry is updated in the PR before merging.
+
+> **Governance note:** The `v1` tag is **never** moved automatically on push
+> to `main`.  It only advances when a maintainer explicitly triggers the
+> release workflow.  This prevents accidental breakage of downstream consumers.
 
 ---
 
@@ -118,5 +124,5 @@ conditions are met:
 - [x] `.github/workflows/security.yml` exists and is callable
 - [x] `README.md` documents consumer usage
 - [x] This `docs/VERSIONING.md` document exists
-- [ ] PR is merged into `main`
-- [ ] Maintainer pushes `v1.0.0` and `v1` tags
+- [x] PR is merged into `main`
+- [x] Maintainer pushes `v1.0.0` and `v1` tags via Release v1 workflow

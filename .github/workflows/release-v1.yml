@@ -1,37 +1,60 @@
 # ============================================================
 # Release tagging workflow — aeon-standards
 #
-# Creates (or force-updates) the mutable `v1` major-version tag
-# on every push to main, keeping it pointing at the latest
-# backwards-compatible commit.
+# Manually triggered (workflow_dispatch) to cut an approved
+# release.  On each run it:
+#   1. Creates an immutable patch tag  (e.g. v1.0.1)
+#   2. Force-updates the mutable major tag  (v1) to the same
+#      commit, so downstream consumers using @v1 stay current.
 #
 # The tag is what downstream repos resolve when they use:
 #   uses: wizardaax/aeon-standards/.github/workflows/python-ci.yml@v1
+#
+# Governance note: the v1 tag is intentionally NOT moved on
+# every push to main.  It only moves when a maintainer
+# explicitly triggers this workflow, providing a release note
+# and the target patch version.
 # ============================================================
-name: Tag v1
+name: Release v1
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      patch_version:
+        description: "Immutable patch tag to create (e.g. v1.0.1)"
+        required: true
+        type: string
+      release_note:
+        description: "One-line summary for the tag annotation"
+        required: false
+        default: "chore: release"
+        type: string
 
 jobs:
-  tag-v1:
-    name: Create / update v1 tag
+  release:
+    name: Tag and release
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # required to push a tag
+      contents: write   # required to push tags
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Create or force-update v1 tag
+      - name: Validate patch_version format
+        run: |
+          echo "${{ inputs.patch_version }}" | grep -Eq '^v1\.[0-9]+\.[0-9]+$' \
+            || { echo "ERROR: patch_version must match v1.X.Y (e.g. v1.0.1)" >&2; exit 1; }
+
+      - name: Create immutable patch tag and update v1
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -fa v1 -m "aeon-standards v1"
+          git tag -a "${{ inputs.patch_version }}" \
+            -m "aeon-standards ${{ inputs.patch_version }}: ${{ inputs.release_note }}"
+          git push origin "${{ inputs.patch_version }}"
+          git tag -fa v1 -m "aeon-standards v1 -> ${{ inputs.patch_version }}"
           git push origin v1 --force
