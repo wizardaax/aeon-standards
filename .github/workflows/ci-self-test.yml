@@ -32,4 +32,5 @@ jobs:
             .github/workflows/python-ci.yml \
             .github/workflows/security.yml \
             .github/workflows/release-v1.yml \
-            .github/workflows/ci-self-test.yml
+            .github/workflows/ci-self-test.yml \
+            .github/workflows/rerun-downstream.yml

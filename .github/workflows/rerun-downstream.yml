@@ -1,0 +1,137 @@
+# ============================================================
+# Rerun downstream failures — aeon-standards
+#
+# Triggered manually after a release to:
+#   1. Verify that the v1 and patch tags point to the same
+#      commit (ensuring downstream @v1 references are stable).
+#   2. Rerun any failed workflow jobs in each consumer
+#      repository so they pick up the corrected tag state.
+#
+# Required secret:
+#   GH_RERUN_TOKEN — a fine-grained PAT or classic PAT with
+#   `repo` + `actions:write` scopes across the target repos,
+#   stored as a repository secret.  If absent the step that
+#   reruns downstream jobs will be skipped with a warning.
+# ============================================================
+name: Rerun downstream failures
+
+on:
+  workflow_dispatch:
+    inputs:
+      patch_version:
+        description: >
+          Patch tag to verify (e.g. v1.0.3).  Defaults to the
+          version recorded in the VERSION file.
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "When true, verify tags but skip the rerun step"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  verify-and-rerun:
+    name: Verify tags and rerun downstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # only reads tags from this repo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve patch version
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.patch_version }}" ]; then
+            PATCH="${{ inputs.patch_version }}"
+          else
+            PATCH="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "patch_version=${PATCH}" >> "$GITHUB_OUTPUT"
+          echo "Resolved patch version: ${PATCH}"
+
+      - name: Verify tags point to the same commit
+        run: |
+          PATCH="${{ steps.resolve.outputs.patch_version }}"
+
+          # Fetch latest tag state from origin
+          git fetch --tags --force origin
+
+          PATCH_SHA=$(git rev-parse "${PATCH}^{}" 2>/dev/null || echo "NOT_FOUND")
+          V1_SHA=$(git rev-parse "v1^{}"          2>/dev/null || echo "NOT_FOUND")
+
+          echo "=== Tag verification ==="
+          echo "${PATCH} -> ${PATCH_SHA}"
+          echo "v1       -> ${V1_SHA}"
+
+          if [ "${PATCH_SHA}" = "NOT_FOUND" ]; then
+            echo "ERROR: tag ${PATCH} not found" >&2; exit 1
+          fi
+          if [ "${V1_SHA}" = "NOT_FOUND" ]; then
+            echo "ERROR: tag v1 not found" >&2; exit 1
+          fi
+          if [ "${PATCH_SHA}" != "${V1_SHA}" ]; then
+            echo "ERROR: ${PATCH} (${PATCH_SHA}) and v1 (${V1_SHA}) differ" >&2; exit 1
+          fi
+
+          echo "✅  ${PATCH} and v1 both point to ${PATCH_SHA}"
+
+          # Also confirm via ls-remote so the output mirrors the
+          # canonical verification command from the issue:
+          #   git ls-remote … refs/tags/v1 refs/tags/v1.0.3
+          echo ""
+          echo "=== ls-remote confirmation ==="
+          git ls-remote origin "refs/tags/v1" "refs/tags/${PATCH}"
+
+      - name: Rerun failed downstream workflows
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RERUN_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_RERUN_TOKEN secret is not set — skipping downstream reruns."
+            exit 0
+          fi
+
+          REPOS=(
+            "wizardaax/recursive-field-math-pro"
+            "wizardaax/SCE-88"
+            "wizardaax/wizardaax.github.io"
+            "wizardaax/Snell-Vern-Hybrid-Drive-Matrix"
+          )
+
+          EXIT_CODE=0
+          for REPO in "${REPOS[@]}"; do
+            echo "--- Rerunning failed jobs in ${REPO} ---"
+
+            # Identify the most recent failed run so we can pass an
+            # explicit run ID to `gh run rerun`.  Without a run ID the
+            # command may behave interactively and fail in CI.
+            RUN_ID=$(gh run list \
+              --repo "${REPO}" \
+              --status failure \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId' 2>/dev/null || true)
+
+            if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
+              echo "::warning::No recent failed run found for ${REPO} — skipping."
+              continue
+            fi
+
+            echo "  Latest failed run ID: ${RUN_ID}"
+            if gh run rerun "${RUN_ID}" --failed --repo "${REPO}" 2>&1; then
+              echo "✅  Rerun triggered for ${REPO} (run ${RUN_ID})"
+            else
+              echo "::warning::Could not trigger rerun for ${REPO} run ${RUN_ID}"
+              EXIT_CODE=1
+            fi
+          done
+
+          exit "${EXIT_CODE}"
