@@ -9,14 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- `release-v1.yml`: renamed `workflow_dispatch` input from `release_note` to
-  `annotation` to match the parameter name documented in the workflow description
-  and accepted by the `gh workflow run -f` flag.
-- `docs/VERSIONING.md`: corrected manual-dispatch parameter name from
-  `release_note` to `annotation` to match the live workflow definition.
-
 ---
 
 ## [v1.0.1] — 2026-03-16
@@ -30,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Self-test CI (`ci-self-test.yml`) validates reusable workflow YAML on every
   push and pull request.
 - `docs/VERSIONING.md` and `CHANGELOG.md` synced to reflect governance policy.
+
+### Fixed
+
+- `release-v1.yml`: renamed `workflow_dispatch` input from `release_note` to
+  `annotation` to match the parameter name accepted by the
+  `gh workflow run -f` flag.
+- `docs/VERSIONING.md`: corrected manual-dispatch parameter name from
+  `release_note` to `annotation` to align with the live workflow definition.
 
 ---
 
