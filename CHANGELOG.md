@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Changes merged to `main` that have not yet been tagged as a release._
+### Fixed
+
+- `release-v1.yml`: renamed `workflow_dispatch` input from `release_note` to
+  `annotation` to match the parameter name documented in the workflow description
+  and accepted by the `gh workflow run -f` flag.
+- `docs/VERSIONING.md`: corrected manual-dispatch parameter name from
+  `release_note` to `annotation` to match the live workflow definition.
 
 ---
 
