@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.0.3] — 2026-03-16
+
+### Changed
+
+- `python-ci.yml`: added `python-versions` (JSON array string, e.g.
+  `'["3.10", "3.11", "3.12"]'`) and `os` inputs so downstream consumers can
+  run a version matrix.  The single-version `python-version` input is replaced
+  by the array form; the default (`'["3.11"]'`) preserves backward
+  compatibility for callers that pass no inputs.
+- Job now uses `strategy.matrix` keyed on `python-versions` and `runs-on`
+  respects the new `os` input.
+
+---
+
 ## [v1.0.2] — 2026-03-16
 
 ### Changed
@@ -71,7 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   uses: wizardaax/aeon-standards/.github/workflows/security.yml@v1
   ```
 
-[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/wizardaax/aeon-standards/compare/v1.0.3...HEAD
+[v1.0.3]: https://github.com/wizardaax/aeon-standards/compare/v1.0.2...v1.0.3
 [v1.0.2]: https://github.com/wizardaax/aeon-standards/compare/v1.0.1...v1.0.2
 [v1.0.1]: https://github.com/wizardaax/aeon-standards/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/wizardaax/aeon-standards/releases/tag/v1.0.0
