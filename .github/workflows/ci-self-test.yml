@@ -1,0 +1,35 @@
+# ============================================================
+# Self-test CI workflow — aeon-standards
+#
+# Validates the reusable workflow YAML on every push and PR.
+# Ensures workflow files are syntactically valid before the
+# v1 tag is ever updated.
+# ============================================================
+name: CI Self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-workflows:
+    name: Lint workflow YAML
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint all workflow files
+        run: |
+          yamllint \
+            .github/workflows/python-ci.yml \
+            .github/workflows/security.yml \
+            .github/workflows/release-v1.yml \
+            .github/workflows/ci-self-test.yml
