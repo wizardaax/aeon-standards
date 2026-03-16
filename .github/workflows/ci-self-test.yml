@@ -33,4 +33,11 @@ jobs:
             .github/workflows/security.yml \
             .github/workflows/release-v1.yml \
             .github/workflows/ci-self-test.yml \
-            .github/workflows/rerun-downstream.yml
+            .github/workflows/rerun-downstream.yml \
+            .github/workflows/orchestrator-dispatch.yml \
+            .github/workflows/orchestrator-reducer.yml \
+            .github/workflows/orchestrator-scheduler.yml \
+            .github/workflows/agent-builder.yml \
+            .github/workflows/agent-auditor.yml \
+            .github/workflows/agent-ci.yml \
+            .github/workflows/agent-federation.yml

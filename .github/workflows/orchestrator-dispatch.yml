@@ -1,0 +1,267 @@
+# ============================================================
+# Orchestrator Dispatch — aeon-standards
+#
+# Entrypoint for the GitHub-native orchestrator framework.
+#
+# On each run it:
+#   1. Generates a unique run ID and run issue.
+#   2. Ensures all required orchestrator labels exist.
+#   3. Posts initial task envelopes (JSON) as issue comments —
+#      these are the "messages" on the GitHub-native message bus.
+#   4. Fires repository_dispatch events for tasks with no
+#      dependencies (task-001: federation, task-002: ci).
+#      The reducer dispatches downstream tasks (e.g. task-003:
+#      auditor) once their dependencies complete.
+#
+# Required secret:
+#   GH_ORCHESTRATOR_TOKEN — fine-grained PAT or GitHub App
+#   token with issues:write + actions:write on this repo and
+#   contents:write on the target repos.  repository_dispatch
+#   events triggered by GITHUB_TOKEN do not start new runs
+#   (GitHub loop-prevention), so a dedicated token is required.
+#
+# Operator UX:
+#   gh workflow run orchestrator-dispatch.yml \
+#     -R wizardaax/aeon-standards \
+#     -f goal="Propagate python-ci@v1.0.4 across fleet" \
+#     -f repo_scope='["wizardaax/recursive-field-math-pro","wizardaax/SCE-88"]' \
+#     -f mode="safe"
+# ============================================================
+name: Orchestrator Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "High-level orchestration goal (one sentence)"
+        required: true
+        type: string
+      repo_scope:
+        description: >
+          JSON array of target repositories.  Defaults to the full
+          authorized fleet from orchestrator-policy.yml.
+        required: false
+        type: string
+        default: >-
+          ["wizardaax/recursive-field-math-pro","wizardaax/SCE-88","wizardaax/wizardaax.github.io"]
+      mode:
+        description: "safe = human gate before merge | aggressive = auto-merge patch PRs"
+        required: false
+        type: string
+        default: "safe"
+
+jobs:
+  dispatch:
+    name: Create run issue and dispatch tasks
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # ------------------------------------------------------------------
+      # 1. Generate run ID
+      # ------------------------------------------------------------------
+      - name: Generate run ID and timestamp
+        id: meta
+        run: |
+          TS=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
+          RAND=$(head -c 4 /dev/urandom | xxd -p)
+          echo "run_id=aeon-${TS}-${RAND}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # 2. Ensure orchestrator labels exist in this repo
+      # ------------------------------------------------------------------
+      - name: Ensure orchestrator labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          create_label() {
+            gh label create "$1" --repo "$GITHUB_REPOSITORY" \
+              --color "$2" --description "$3" --force 2>/dev/null || true
+          }
+          create_label "orchestrator:run"   "0075ca" "Active orchestrator run"
+          create_label "state:queued"       "e4e669" "Task queued"
+          create_label "state:running"      "0052cc" "Task running"
+          create_label "state:blocked"      "d93f0b" "Task blocked / awaiting dependency"
+          create_label "state:done"         "0e8a16" "Task done"
+          create_label "state:failed"       "b60205" "Task failed"
+          create_label "priority:p1"        "b60205" "Critical priority"
+          create_label "priority:p2"        "e99695" "Normal priority"
+          create_label "priority:p3"        "f9d0c4" "Low priority"
+          create_label "agent:builder"      "c5def5" "Builder agent task"
+          create_label "agent:auditor"      "bfd4f2" "Auditor agent task"
+          create_label "agent:ci"           "d4c5f9" "CI agent task"
+          create_label "agent:federation"   "c2e0c6" "Federation agent task"
+          create_label "human-gate:pending" "fbca04" "Awaiting operator /approve"
+          create_label "human-gate:approved" "0e8a16" "Operator approved merge gate"
+
+      # ------------------------------------------------------------------
+      # 3. Create run tracking issue
+      # ------------------------------------------------------------------
+      - name: Create run tracking issue
+        id: create_issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          RUN_ID="${{ steps.meta.outputs.run_id }}"
+          GOAL="${{ inputs.goal }}"
+          REPO_SCOPE='${{ inputs.repo_scope }}'
+          MODE="${{ inputs.mode }}"
+          TS="${{ steps.meta.outputs.timestamp }}"
+
+          BODY="## Orchestrator Run: \`${RUN_ID}\`
+
+          | Field | Value |
+          |-------|-------|
+          | **Run ID** | \`${RUN_ID}\` |
+          | **Goal** | ${GOAL} |
+          | **Mode** | \`${MODE}\` |
+          | **Started** | ${TS} |
+          | **Repo Scope** | \`${REPO_SCOPE}\` |
+
+          ### Task DAG
+
+          - [ ] \`task-001\` — **federation**: check workflow ref alignment
+          - [ ] \`task-002\` — **ci**: rerun failed checks
+          - [ ] \`task-003\` — **auditor**: verify standards compliance _(depends on task-001, task-002)_
+
+          ### Event Log
+
+          Structured JSON task envelopes are posted as comments below.
+          Each envelope is uniquely identified by \`run_id + task_id + attempt\`.
+
+          ---
+          <!-- orchestrator:meta run_id=\"${RUN_ID}\" -->"
+
+          ISSUE_URL=$(gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "🤖 Orchestrator Run: ${RUN_ID}" \
+            --body "${BODY}" \
+            --label "orchestrator:run,state:running,priority:p2")
+
+          ISSUE_NUMBER=$(echo "${ISSUE_URL}" | grep -oE '[0-9]+$')
+          echo "issue_url=${ISSUE_URL}"           >> "$GITHUB_OUTPUT"
+          echo "issue_number=${ISSUE_NUMBER}"     >> "$GITHUB_OUTPUT"
+          echo "✅  Created run issue #${ISSUE_NUMBER}: ${ISSUE_URL}"
+
+      # ------------------------------------------------------------------
+      # 4. Post initial task envelopes as issue comments
+      # ------------------------------------------------------------------
+      - name: Post initial task envelopes
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+        run: |
+          RUN_ID="${{ steps.meta.outputs.run_id }}"
+          GOAL="${{ inputs.goal }}"
+          REPO_SCOPE='${{ inputs.repo_scope }}'
+          MODE="${{ inputs.mode }}"
+          TS="${{ steps.meta.outputs.timestamp }}"
+          ISSUE_NUMBER="${{ steps.create_issue.outputs.issue_number }}"
+
+          post_envelope() {
+            local TASK_ID="$1"
+            local AGENT="$2"
+            local DEPENDS_ON="$3"   # JSON array string
+
+            ENVELOPE=$(jq -n \
+              --arg    run_id         "${RUN_ID}"       \
+              --arg    goal           "${GOAL}"         \
+              --argjson repo_scope    "${REPO_SCOPE}"   \
+              --arg    task_id        "${TASK_ID}"      \
+              --arg    agent          "${AGENT}"        \
+              --arg    mode           "${MODE}"         \
+              --arg    ts             "${TS}"           \
+              --argjson depends_on    "${DEPENDS_ON}"   \
+              --argjson issue_number  "${ISSUE_NUMBER}" \
+              '{
+                run_id:           $run_id,
+                goal:             $goal,
+                repo_scope:       $repo_scope,
+                task_id:          $task_id,
+                agent:            $agent,
+                state:            "queued",
+                attempt:          1,
+                depends_on:       $depends_on,
+                artifacts:        [],
+                result:           null,
+                timestamp:        $ts,
+                run_issue_number: $issue_number,
+                mode:             $mode
+              }')
+
+            COMMENT="<!-- orchestrator:envelope task_id=\"${TASK_ID}\" run_id=\"${RUN_ID}\" -->
+          \`\`\`json
+          ${ENVELOPE}
+          \`\`\`"
+
+            printf '%s' "${COMMENT}" > /tmp/envelope_comment.md
+            gh issue comment "${ISSUE_NUMBER}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body-file /tmp/envelope_comment.md
+            echo "✅  Posted envelope for ${AGENT} ${TASK_ID}"
+          }
+
+          # Independent tasks — dispatched immediately
+          post_envelope "task-001" "federation" '[]'
+          post_envelope "task-002" "ci"         '[]'
+          # Dependent task — reducer dispatches this after task-001 and task-002 complete
+          post_envelope "task-003" "auditor"    '["task-001","task-002"]'
+
+      # ------------------------------------------------------------------
+      # 5. Fire repository_dispatch for independent tasks
+      # ------------------------------------------------------------------
+      - name: Dispatch independent agent tasks
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::GH_ORCHESTRATOR_TOKEN not set — skipping repository_dispatch. \
+          Set the secret to enable automatic agent triggering."
+            exit 0
+          fi
+
+          RUN_ID="${{ steps.meta.outputs.run_id }}"
+          ISSUE_NUMBER="${{ steps.create_issue.outputs.issue_number }}"
+          GOAL="${{ inputs.goal }}"
+          REPO_SCOPE='${{ inputs.repo_scope }}'
+          MODE="${{ inputs.mode }}"
+
+          dispatch_task() {
+            local TASK_ID="$1"
+            local AGENT="$2"
+
+            PAYLOAD=$(jq -n \
+              --arg    event_type   "agent.task.${AGENT}"  \
+              --arg    run_id       "${RUN_ID}"             \
+              --arg    task_id      "${TASK_ID}"            \
+              --argjson issue_number "${ISSUE_NUMBER}"      \
+              --arg    goal         "${GOAL}"               \
+              --argjson repo_scope  "${REPO_SCOPE}"         \
+              --arg    mode         "${MODE}"               \
+              '{
+                event_type: $event_type,
+                client_payload: {
+                  run_id:       $run_id,
+                  task_id:      $task_id,
+                  issue_number: $issue_number,
+                  goal:         $goal,
+                  repo_scope:   $repo_scope,
+                  mode:         $mode
+                }
+              }')
+
+            echo "${PAYLOAD}" | gh api "/repos/${GITHUB_REPOSITORY}/dispatches" \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              --input -
+
+            echo "✅  Dispatched ${AGENT} task ${TASK_ID}"
+          }
+
+          dispatch_task "task-001" "federation"
+          dispatch_task "task-002" "ci"

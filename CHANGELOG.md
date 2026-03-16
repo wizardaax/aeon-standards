@@ -9,7 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
----
+### Added
+
+- **GitHub-native orchestrator framework** (`A+ design`): multi-agent orchestration
+  using only GitHub primitives (Issues, Labels, Actions, `repository_dispatch`).
+  No external infrastructure required.
+
+  New workflow files:
+  - `orchestrator-dispatch.yml` — entrypoint; creates run issue, posts task envelopes,
+    fires `repository_dispatch` for independent tasks.
+  - `orchestrator-reducer.yml` — aggregates task results, dispatches unblocked tasks,
+    posts final summary; handles `/approve` and `/abort` operator commands.
+  - `orchestrator-scheduler.yml` — cron watchdog (every 10 min) that detects stale
+    tasks, retries up to `max_attempts`, posts daily health-KPI digest.
+  - `agent-builder.yml` — builder agent; creates branches and draft/ready PRs in
+    consumer repos.
+  - `agent-auditor.yml` — auditor agent; checks CI status, branch protection, and
+    action SHA-pin compliance.
+  - `agent-ci.yml` — CI agent; reruns failed workflow jobs and reports pass-rate delta.
+  - `agent-federation.yml` — federation agent; detects reusable-workflow ref drift and
+    optionally opens patch PRs.
+
+  New supporting files:
+  - `orchestrator-policy.yml` — policy-as-code: retry budget, SLA, denylist,
+    authorized repos, SHA-pin enforcement, merge-gate, audit severity threshold.
+  - `schemas/envelope.json` — JSON Schema for task envelopes.
+  - `schemas/task.json` — JSON Schema for task definitions.
+  - `schemas/result.json` — JSON Schema for agent results.
+  - `.github/ISSUE_TEMPLATE/orchestrator_goal.yml` — structured issue template.
+  - `docs/ORCHESTRATION_PROTOCOL.md` — full protocol documentation.
+
+### Changed
+
+- `ci-self-test.yml`: extended yamllint step to validate all seven new workflow files.
 
 ## [v1.0.4] — 2026-03-16
 

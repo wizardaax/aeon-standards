@@ -1,0 +1,90 @@
+# ============================================================
+# Orchestrator Policy — aeon-standards
+#
+# Policy-as-code configuration consumed by orchestrator and
+# agent workflows.  Changes to this file require CODEOWNERS
+# review and must not be made autonomously by any agent.
+# ============================================================
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Retry budget
+# ---------------------------------------------------------------------------
+# Maximum number of attempts per task before it is marked failed/escalated.
+max_attempts: 3
+
+# ---------------------------------------------------------------------------
+# SLA
+# ---------------------------------------------------------------------------
+# Minutes after dispatch before orchestrator-scheduler considers a running
+# task stale and either retries or marks it blocked.
+task_sla_minutes: 30
+
+# ---------------------------------------------------------------------------
+# Human gate
+# ---------------------------------------------------------------------------
+# When true, the reducer will not allow auto-merge of any PR produced by
+# this run.  An operator must post "/approve <run_id>" on the run issue.
+require_human_gate: true
+
+# ---------------------------------------------------------------------------
+# File denylist — agents must not autonomously edit these paths
+# ---------------------------------------------------------------------------
+# Patterns are matched against file paths using fnmatch-style glob.
+# Any PR that touches a denylisted path is blocked and escalated.
+denylist_paths:
+  - ".github/workflows/release*"
+  - ".github/workflows/orchestrator*"
+  - "orchestrator-policy.yml"
+  - "CODEOWNERS"
+  - ".github/CODEOWNERS"
+  - "security*"
+  - "VERSION"
+  - "CHANGELOG.md"
+
+# ---------------------------------------------------------------------------
+# Required status checks (auditor agent)
+# ---------------------------------------------------------------------------
+# Stable CI job names that must appear in branch-protection required checks.
+# The auditor flags any repo that is missing one or more of these checks.
+required_status_checks:
+  - "python-ci"
+  - "security"
+
+# ---------------------------------------------------------------------------
+# Authorised target repositories
+# ---------------------------------------------------------------------------
+# Agents may only open PRs or trigger reruns in these repositories.
+# Any request to act on an unlisted repo is rejected.
+authorized_repos:
+  - "wizardaax/recursive-field-math-pro"
+  - "wizardaax/SCE-88"
+  - "wizardaax/wizardaax.github.io"
+  - "wizardaax/Snell-Vern-Hybrid-Drive-Matrix"
+
+# ---------------------------------------------------------------------------
+# Action SHA-pin enforcement (auditor agent)
+# ---------------------------------------------------------------------------
+# When true the auditor fails any workflow that references a third-party
+# action without a full commit-SHA pin.
+require_action_sha_pins: true
+
+# ---------------------------------------------------------------------------
+# Security severity threshold (auditor agent)
+# ---------------------------------------------------------------------------
+# Auditor blocks merge when any finding is at or above this severity.
+# Valid values: critical | high | medium | low
+audit_block_severity: "high"
+
+# ---------------------------------------------------------------------------
+# Auto-PR batching (federation agent)
+# ---------------------------------------------------------------------------
+# Maximum number of patch PRs the federation agent may open in a single run.
+max_auto_prs: 5
+
+# ---------------------------------------------------------------------------
+# Daily digest
+# ---------------------------------------------------------------------------
+# When true, orchestrator-scheduler posts a daily health KPI issue comment
+# summarising active/done/failed runs from the last 24 h.
+daily_digest_enabled: true

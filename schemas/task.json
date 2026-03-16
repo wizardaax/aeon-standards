@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wizardaax/aeon-standards/schemas/task.json",
+  "title": "Orchestrator Task Definition",
+  "description": "A planned task used by orchestrator-dispatch to build the run DAG before envelopes are posted.",
+  "type": "object",
+  "required": ["task_id", "agent", "description", "depends_on"],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9]{3,}$",
+      "description": "Unique identifier within a run.",
+      "examples": ["task-001"]
+    },
+    "agent": {
+      "type": "string",
+      "enum": ["builder", "auditor", "ci", "federation", "research"],
+      "description": "Agent type that will execute this task."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable description of what this task does."
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^task-[0-9]{3,}$"
+      },
+      "default": [],
+      "description": "Upstream task IDs that must be done before this task is dispatched."
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Agent-specific input parameters merged into the envelope client_payload."
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "description": "Maximum retry attempts before the task is marked failed. Overrides orchestrator-policy.yml when set."
+    },
+    "sla_minutes": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 30,
+      "description": "Minutes after dispatch before orchestrator-scheduler marks the task blocked."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["p1", "p2", "p3"],
+      "default": "p2",
+      "description": "Task priority for scheduling and alerting."
+    }
+  }
+}

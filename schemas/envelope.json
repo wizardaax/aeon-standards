@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wizardaax/aeon-standards/schemas/envelope.json",
+  "title": "Orchestrator Task Envelope",
+  "description": "Structured envelope for orchestrator task messages on the GitHub-native message bus. Posted as JSON fenced blocks in run-issue comments.",
+  "type": "object",
+  "required": ["run_id", "goal", "task_id", "agent", "state", "attempt", "timestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for the orchestrator run.",
+      "pattern": "^aeon-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-[0-9a-f]{8}$",
+      "examples": ["aeon-2026-03-16T22-14-55Z-7f3a1b2c"]
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "High-level orchestration goal passed to every agent in the run."
+    },
+    "repo_scope": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$"
+      },
+      "description": "Subset of target repositories in scope for this run.",
+      "examples": [["wizardaax/recursive-field-math-pro", "wizardaax/SCE-88"]]
+    },
+    "task_id": {
+      "type": "string",
+      "description": "Unique task identifier within a run.",
+      "pattern": "^task-[0-9]{3,}$",
+      "examples": ["task-001"]
+    },
+    "agent": {
+      "type": "string",
+      "enum": ["builder", "auditor", "ci", "federation", "research"],
+      "description": "Agent type responsible for executing this task."
+    },
+    "state": {
+      "type": "string",
+      "enum": ["queued", "running", "blocked", "done", "failed"],
+      "description": "Current task state in the orchestrator state machine."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current attempt number. Maximum is controlled by max_attempts in orchestrator-policy.yml."
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^task-[0-9]{3,}$"
+      },
+      "default": [],
+      "description": "Task IDs that must reach state=done before this task may be dispatched."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Artifact name (e.g. alignment-report)."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Download URL (GitHub Actions artifact or issue attachment)."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["report", "runbook", "pr", "log"],
+            "description": "Artifact category."
+          }
+        }
+      },
+      "default": [],
+      "description": "Artifacts produced or referenced by this task."
+    },
+    "result": {
+      "description": "Task result (null until task transitions to done or failed).",
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "result.json"}
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the last state transition."
+    },
+    "run_issue_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "GitHub issue number of the run tracking issue."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["safe", "aggressive"],
+      "default": "safe",
+      "description": "Execution mode. safe=human gate required before merges; aggressive=auto-merge allowed."
+    }
+  }
+}
