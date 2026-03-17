@@ -1,0 +1,40 @@
+# ============================================================
+# Orchestrator Audit — aeon-standards
+#
+# Scheduled every 4 hours (and manually triggerable) to:
+#   1. Audit all open PRs across the full fleet.
+#   2. Auto-repair failing checks where possible.
+#   3. Maximise auto-merge readiness.
+#
+# Delegates to the orchestrator-dispatch reusable workflow so
+# the full agent DAG (federation → ci → auditor) runs on every
+# scheduled invocation with no manual relay required.
+#
+# Required secret (inherited from orchestrator-dispatch):
+#   GH_ORCHESTRATOR_TOKEN — fine-grained PAT or GitHub App
+#   token with issues:write + actions:write on this repo and
+#   contents:write on the target repos.
+#
+# Trigger manually:
+#   gh workflow run orchestrator-audit.yml -R wizardaax/aeon-standards
+# ============================================================
+name: Orchestrator Audit
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"  # every 4 hours
+  workflow_dispatch:
+
+jobs:
+  orchestrator_audit:
+    uses: wizardaax/aeon-standards/.github/workflows/orchestrator-dispatch.yml@main
+    permissions:
+      issues: write
+      contents: read
+    with:
+      goal: >-
+        Audit, auto-fix, and maximize auto-merge readiness across all open PRs
+        in every repo.
+      mode: "safe"
+    secrets:
+      GH_ORCHESTRATOR_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN }}
