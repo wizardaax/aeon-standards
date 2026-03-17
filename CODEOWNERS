@@ -1,0 +1,27 @@
+# ============================================================
+# CODEOWNERS — aeon-standards
+#
+# Assigns required reviewers for critical workflow and policy
+# files.  Changes to any of the paths below require review
+# from the listed owner(s) before merging.
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# ============================================================
+
+# Default owner for all files not matched below
+*                                    @wizardaax
+
+# Orchestrator workflows — require owner sign-off
+.github/workflows/orchestrator-*.yml  @wizardaax
+.github/workflows/agent-*.yml         @wizardaax
+.github/workflows/release-*.yml       @wizardaax
+.github/workflows/rerun-downstream.yml @wizardaax
+
+# Policy-as-code — any change must be reviewed by the owner
+orchestrator-policy.yml              @wizardaax
+
+# Repository governance
+CODEOWNERS                           @wizardaax
+.github/CODEOWNERS                   @wizardaax
+VERSION                              @wizardaax
+CHANGELOG.md                         @wizardaax

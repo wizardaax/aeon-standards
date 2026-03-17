@@ -1,0 +1,57 @@
+name: "Orchestrator Dashboard"
+description: "Pinned fleet status dashboard — tracks merge readiness across all repos."
+title: "📊 AEON Orchestrator Merge & Status Dashboard"
+labels:
+  - "orchestrator:run"
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # AEON Orchestrator Merge & Status Dashboard
+
+        > **Auto-updated every 4 hours** by the Orchestrator Audit workflow
+        > (`wizardaax/aeon-standards` → Actions → Orchestrator Audit).
+        > Pin this issue for at-a-glance fleet health.
+
+        ---
+
+        ## Fleet Status
+
+        | Repo | Open PRs | Passed Checks | Failed Checks | Needs Review | Mergeable | Last Action |
+        |------|----------|--------------|--------------|-------------|-----------|-------------|
+        | recursive-field-math-pro | — | — | — | — | — | — |
+        | SCE-88 | — | — | — | — | — | — |
+        | aeon-standards | — | — | — | — | — | — |
+        | Snell-Vern-Hybrid-Drive-Matrix | — | — | — | — | — | — |
+        | ziltrix-sch-core | — | — | — | — | — | — |
+        | glyph_phase_engine | — | — | — | — | — | — |
+        | recursive-field-math | — | — | — | — | — | — |
+        | wizardaax.github.io | — | — | — | — | — | — |
+        | Codex-AEON-Resonator | — | — | — | — | — | — |
+
+        ## Failing / Escalated
+
+        - [ ] _(No escalated items — orchestrator will autofill on next run)_
+
+        ## Actions
+        - Orchestrator runs every 4 hours and audits/repairs all PRs.
+        - Human intervention required **only** if security/policy escalates.
+
+        ## Trigger a Manual Run
+
+        ```bash
+        gh workflow run orchestrator-audit.yml -R wizardaax/aeon-standards
+        ```
+
+        ---
+        _End of dashboard template_
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: "Notes / Escalations"
+      description: "Record any manual escalations or notes for the current sprint."
+      placeholder: "Leave blank — orchestrator will append status updates as issue comments."
+    validations:
+      required: false

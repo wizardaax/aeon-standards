@@ -49,6 +49,28 @@ on:
         required: false
         type: string
         default: "safe"
+  workflow_call:
+    inputs:
+      goal:
+        description: "High-level orchestration goal (one sentence)"
+        required: true
+        type: string
+      repo_scope:
+        description: >
+          JSON array of target repositories.  Defaults to the full
+          authorized fleet from orchestrator-policy.yml.
+        required: false
+        type: string
+        default: >-
+          ["wizardaax/recursive-field-math-pro","wizardaax/SCE-88","wizardaax/aeon-standards","wizardaax/Snell-Vern-Hybrid-Drive-Matrix","wizardaax/ziltrix-sch-core","wizardaax/glyph_phase_engine","wizardaax/recursive-field-math","wizardaax/wizardaax.github.io","wizardaax/Codex-AEON-Resonator"]
+      mode:
+        description: "safe = human gate before merge | aggressive = auto-merge patch PRs"
+        required: false
+        type: string
+        default: "safe"
+    secrets:
+      GH_ORCHESTRATOR_TOKEN:
+        required: false
 
 jobs:
   dispatch:
