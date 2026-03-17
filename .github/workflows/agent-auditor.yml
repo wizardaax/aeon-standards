@@ -277,6 +277,102 @@ jobs:
           PYEOF
 
       # ------------------------------------------------------------------
+      # Audit open PRs across all repos in scope
+      # ------------------------------------------------------------------
+      - name: Audit open PRs
+        id: pr_audit
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          REPO_SCOPE: ${{ toJson(github.event.client_payload.repo_scope) }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess
+
+          REPO_SCOPE = json.loads(os.environ["REPO_SCOPE"])
+          GH_TOKEN   = os.environ.get("GH_TOKEN", "")
+
+          def gh(*args):
+              r = subprocess.run(
+                  ["gh"] + list(args),
+                  text=True, capture_output=True,
+                  env={**os.environ, "GH_TOKEN": GH_TOKEN}
+              )
+              return r
+
+          pr_report = {}
+          total_open = 0
+
+          for repo in REPO_SCOPE:
+              print(f"\n--- Open PRs in {repo} ---")
+              pr_r = gh(
+                  "pr", "list",
+                  "--repo", repo,
+                  "--state", "open",
+                  "--json", "number,title,isDraft,mergeStateStatus,mergeable,url",
+                  "--limit", "100",
+              )
+              if pr_r.returncode != 0:
+                  print(f"  ⚠️  Could not list PRs for {repo}: {pr_r.stderr.strip()}")
+                  pr_report[repo] = {"error": pr_r.stderr.strip(), "prs": []}
+                  continue
+
+              try:
+                  prs = json.loads(pr_r.stdout.strip())
+              except json.JSONDecodeError:
+                  prs = []
+
+              pr_report[repo] = {"prs": prs}
+              total_open += len(prs)
+
+              if not prs:
+                  print("  ✅  No open PRs")
+              else:
+                  for pr in prs:
+                      draft_tag   = " [DRAFT]" if pr.get("isDraft") else ""
+                      merge_state = pr.get("mergeStateStatus", "UNKNOWN")
+                      mergeable   = pr.get("mergeable", "UNKNOWN")
+                      print(
+                          f"  #{pr['number']} {pr['title']}{draft_tag} "
+                          f"| merge_state={merge_state} mergeable={mergeable} "
+                          f"| {pr.get('url', '')}"
+                      )
+
+          summary_line = (
+              f"PR Audit: {total_open} open PR(s) across {len(REPO_SCOPE)} repo(s)."
+          )
+          print(f"\n{summary_line}")
+
+          with open("/tmp/pr_audit_result.json", "w") as f:
+              json.dump({"total_open": total_open, "by_repo": pr_report}, f)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"pr_summary={summary_line}\n")
+              out.write(f"total_open={total_open}\n")
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # Merge PR audit results into main audit result
+      # ------------------------------------------------------------------
+      - name: Merge PR audit into result
+        run: |
+          python3 - <<'PYEOF'
+          import json
+
+          with open("/tmp/audit_result.json") as f:
+              result = json.load(f)
+
+          try:
+              with open("/tmp/pr_audit_result.json") as f:
+                  pr_result = json.load(f)
+          except FileNotFoundError:
+              pr_result = {}
+
+          result["open_prs"] = pr_result
+          with open("/tmp/audit_result.json", "w") as f:
+              json.dump(result, f)
+          PYEOF
+
+      # ------------------------------------------------------------------
       # Post result envelope
       # ------------------------------------------------------------------
       - name: Post result envelope

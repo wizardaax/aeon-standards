@@ -60,8 +60,13 @@ required_status_checks:
 authorized_repos:
   - "wizardaax/recursive-field-math-pro"
   - "wizardaax/SCE-88"
-  - "wizardaax/wizardaax.github.io"
+  - "wizardaax/aeon-standards"
   - "wizardaax/Snell-Vern-Hybrid-Drive-Matrix"
+  - "wizardaax/ziltrix-sch-core"
+  - "wizardaax/glyph_phase_engine"
+  - "wizardaax/recursive-field-math"
+  - "wizardaax/wizardaax.github.io"
+  - "wizardaax/Codex-AEON-Resonator"
 
 # ---------------------------------------------------------------------------
 # Action SHA-pin enforcement (auditor agent)

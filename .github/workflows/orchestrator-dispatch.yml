@@ -43,7 +43,7 @@ on:
         required: false
         type: string
         default: >-
-          ["wizardaax/recursive-field-math-pro","wizardaax/SCE-88","wizardaax/wizardaax.github.io"]
+          ["wizardaax/recursive-field-math-pro","wizardaax/SCE-88","wizardaax/aeon-standards","wizardaax/Snell-Vern-Hybrid-Drive-Matrix","wizardaax/ziltrix-sch-core","wizardaax/glyph_phase_engine","wizardaax/recursive-field-math","wizardaax/wizardaax.github.io","wizardaax/Codex-AEON-Resonator"]
       mode:
         description: "safe = human gate before merge | aggressive = auto-merge patch PRs"
         required: false
