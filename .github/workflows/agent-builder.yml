@@ -44,11 +44,13 @@ jobs:
       - name: Extract dispatch payload
         id: payload
         run: |
-          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
-          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
-          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
-          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
-          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
+          {
+            echo "run_id=${{ github.event.client_payload.run_id }}"
+            echo "task_id=${{ github.event.client_payload.task_id }}"
+            echo "issue_number=${{ github.event.client_payload.issue_number }}"
+            echo "mode=${{ github.event.client_payload.mode }}"
+            echo "attempt=${{ github.event.client_payload.attempt || '1' }}"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------
       # Mark task as running
@@ -129,9 +131,11 @@ jobs:
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::warning::GH_ORCHESTRATOR_TOKEN not set — builder cannot open PRs."
-            echo "ok=true"     >> "$GITHUB_OUTPUT"
-            echo "summary=GH_ORCHESTRATOR_TOKEN not set; PRs skipped." >> "$GITHUB_OUTPUT"
-            echo "prs_opened=[]" >> "$GITHUB_OUTPUT"
+            {
+              echo "ok=true"
+              echo "summary=GH_ORCHESTRATOR_TOKEN not set; PRs skipped."
+              echo "prs_opened=[]"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 

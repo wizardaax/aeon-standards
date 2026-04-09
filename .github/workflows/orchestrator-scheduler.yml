@@ -65,9 +65,11 @@ jobs:
               p = yaml.safe_load(f)
           print(str(p.get('daily_digest_enabled', True)).lower())
           ")
-          echo "task_sla_minutes=${TASK_SLA}"       >> "$GITHUB_OUTPUT"
-          echo "max_attempts=${MAX_ATTEMPTS}"        >> "$GITHUB_OUTPUT"
-          echo "daily_digest_enabled=${DIGEST_ENABLED}" >> "$GITHUB_OUTPUT"
+          {
+            echo "task_sla_minutes=${TASK_SLA}"
+            echo "max_attempts=${MAX_ATTEMPTS}"
+            echo "daily_digest_enabled=${DIGEST_ENABLED}"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------
       # Find active orchestrator run issues
@@ -89,7 +91,7 @@ jobs:
           COUNT=$(jq 'length' /tmp/active_runs.json)
           echo "active_run_count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "Found ${COUNT} active run issue(s)"
-          cat /tmp/active_runs.json | jq -r '.[] | "#\(.number) \(.title)"'
+          jq -r '.[] | "#\(.number) \(.title)"' /tmp/active_runs.json
 
       # ------------------------------------------------------------------
       # Check each active run for stale tasks
