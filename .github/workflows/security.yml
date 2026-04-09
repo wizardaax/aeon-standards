@@ -49,20 +49,20 @@ jobs:
       # Audits Python dependencies when a requirements file or
       # pyproject.toml is present.
       - name: Set up Python for pip-audit
-        if: >
-          hashFiles('requirements.txt') != '' ||
-          hashFiles('requirements*.txt') != '' ||
-          hashFiles('pyproject.toml') != ''
+        if: >-
+          ${{ hashFiles('requirements.txt') != ''
+          || hashFiles('requirements*.txt') != ''
+          || hashFiles('pyproject.toml') != '' }}
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Audit Python dependencies (pip-audit)
-        if: >
-          hashFiles('requirements.txt') != '' ||
-          hashFiles('requirements*.txt') != '' ||
-          hashFiles('pyproject.toml') != ''
+        if: >-
+          ${{ hashFiles('requirements.txt') != ''
+          || hashFiles('requirements*.txt') != ''
+          || hashFiles('pyproject.toml') != '' }}
         run: |
           pip install pip-audit
           # Collect requirement files; fall back to pyproject.toml extras
@@ -80,7 +80,7 @@ jobs:
       # present (npm ci is required for audit to work on the
       # frozen lockfile).
       - name: Audit npm dependencies (npm audit)
-        if: hashFiles('package-lock.json') != ''
+        if: ${{ hashFiles('package-lock.json') != '' }}
         run: |
           npm ci --ignore-scripts --prefer-offline
           npm audit --audit-level=high
