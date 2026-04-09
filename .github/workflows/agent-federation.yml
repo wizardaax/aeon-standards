@@ -44,12 +44,14 @@ jobs:
       - name: Extract dispatch payload
         id: payload
         run: |
-          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
-          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
-          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
-          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
-          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
-          echo "current_version=$(tr -d '[:space:]' < VERSION)"                 >> "$GITHUB_OUTPUT"
+          {
+            echo "run_id=${{ github.event.client_payload.run_id }}"
+            echo "task_id=${{ github.event.client_payload.task_id }}"
+            echo "issue_number=${{ github.event.client_payload.issue_number }}"
+            echo "mode=${{ github.event.client_payload.mode }}"
+            echo "attempt=${{ github.event.client_payload.attempt || '1' }}"
+            echo "current_version=$(tr -d '[:space:]' < VERSION)"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------
       # Mark task as running
@@ -251,7 +253,6 @@ jobs:
           ATTEMPT="${{ steps.payload.outputs.attempt }}"
           TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           OK="${{ steps.federation.outputs.ok || 'true' }}"
-          SUMMARY="${{ steps.federation.outputs.summary || 'Federation agent completed.' }}"
           REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
           GOAL="${{ github.event.client_payload.goal }}"
           STATE="done"

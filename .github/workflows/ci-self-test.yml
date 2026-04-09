@@ -42,3 +42,18 @@ jobs:
             .github/workflows/agent-auditor.yml \
             .github/workflows/agent-ci.yml \
             .github/workflows/agent-federation.yml
+
+  actionlint-workflows:
+    name: Actionlint workflow YAML
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install and run actionlint
+        run: |
+          bash <(curl -sL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

@@ -40,14 +40,15 @@ jobs:
       - name: Extract dispatch payload
         id: payload
         run: |
-          echo "run_id=${{ github.event.client_payload.run_id }}"               >> "$GITHUB_OUTPUT"
-          echo "task_id=${{ github.event.client_payload.task_id }}"             >> "$GITHUB_OUTPUT"
-          echo "issue_number=${{ github.event.client_payload.issue_number }}"   >> "$GITHUB_OUTPUT"
-          echo "mode=${{ github.event.client_payload.mode }}"                   >> "$GITHUB_OUTPUT"
-          echo "attempt=${{ github.event.client_payload.attempt || '1' }}"      >> "$GITHUB_OUTPUT"
-
           REPO_SCOPE='${{ toJson(github.event.client_payload.repo_scope) }}'
-          echo "repo_scope=${REPO_SCOPE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "run_id=${{ github.event.client_payload.run_id }}"
+            echo "task_id=${{ github.event.client_payload.task_id }}"
+            echo "issue_number=${{ github.event.client_payload.issue_number }}"
+            echo "mode=${{ github.event.client_payload.mode }}"
+            echo "attempt=${{ github.event.client_payload.attempt || '1' }}"
+            echo "repo_scope=${REPO_SCOPE}"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------
       # Mark task as running

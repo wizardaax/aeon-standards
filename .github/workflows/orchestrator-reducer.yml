@@ -52,6 +52,7 @@ jobs:
         id: ctx
         env:
           GH_TOKEN: ${{ secrets.GH_ORCHESTRATOR_TOKEN || github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           EVENT="${{ github.event_name }}"
 
@@ -61,7 +62,6 @@ jobs:
             COMMAND=""
           elif [ "${EVENT}" = "issue_comment" ]; then
             ISSUE_NUMBER="${{ github.event.issue.number }}"
-            COMMENT_BODY="${{ github.event.comment.body }}"
 
             # Check if the issue has the orchestrator:run label
             HAS_LABEL=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/labels" \
@@ -84,10 +84,12 @@ jobs:
             exit 0
           fi
 
-          echo "run_id=${RUN_ID}"           >> "$GITHUB_OUTPUT"
-          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "command=${COMMAND}"           >> "$GITHUB_OUTPUT"
-          echo "skip=false"                  >> "$GITHUB_OUTPUT"
+          {
+            echo "run_id=${RUN_ID}"
+            echo "issue_number=${ISSUE_NUMBER}"
+            echo "command=${COMMAND}"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------
       # Handle operator commands (/approve, /abort)
@@ -254,11 +256,6 @@ jobs:
             exit 0
           fi
 
-          RUN_ID="${{ steps.ctx.outputs.run_id }}"
-          ISSUE_NUMBER="${{ steps.ctx.outputs.issue_number }}"
-          GOAL="${{ github.event.client_payload.goal }}"
-          REPO_SCOPE="${{ github.event.client_payload.repo_scope }}"
-          MODE="${{ github.event.client_payload.mode }}"
           UNBLOCKED='${{ steps.advance.outputs.newly_unblocked }}'
 
           echo "${UNBLOCKED}" | python3 -c "
