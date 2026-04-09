@@ -23,9 +23,11 @@ jobs:
   security:
     name: Security
     runs-on: ubuntu-latest
-    permissions:
-      contents: read          # required for checkout + gitleaks
-      pull-requests: read     # required for dependency-review
+    # Permissions are intentionally omitted so the reusable workflow
+    # inherits whatever the caller grants.  This prevents startup_failure
+    # when callers declare a permissions block that does not include
+    # pull-requests: read.  Callers that need dependency-review on PRs
+    # should grant: contents: read, pull-requests: read.
 
     steps:
       # Full history is needed for gitleaks secret scanning.

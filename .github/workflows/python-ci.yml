@@ -90,6 +90,8 @@ jobs:
             # Install project deps if any requirements file exists
             if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
             if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+            # Install project declared in pyproject.toml (covers deps like numpy)
+            if [ -f pyproject.toml ]; then pip install .; fi
             pytest -q
           else
             echo "No test files found — skipping pytest."
