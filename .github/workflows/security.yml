@@ -64,8 +64,9 @@ jobs:
         run: |
           pip install pip-audit
           # Collect requirement files; fall back to pyproject.toml extras
-          REQ_FILES=$(find . -maxdepth 1 -name 'requirements*.txt' -printf '%f ')
+          REQ_FILES=$(find . -maxdepth 1 -name 'requirements*.txt' -exec basename {} \; | tr '\n' ' ')
           if [ -n "$REQ_FILES" ]; then
+            # Word splitting is intentional; each filename is a separate -r argument
             # shellcheck disable=SC2086
             pip-audit -r $REQ_FILES
           elif [ -f pyproject.toml ]; then
